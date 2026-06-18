@@ -1,0 +1,3 @@
+#Realizar ejecutable 
+pyinstaller --noconsole --onefile --icon=iconos/icono_v3.ico --name=LectorJson.v3 --add-data "libroIVA.py;." lector_carpetajson.py
+pyinstaller --noconsole --onefile --icon=icono/icono_agua.ico --name=Metraje_Agua --add-data AguaFactura.py
