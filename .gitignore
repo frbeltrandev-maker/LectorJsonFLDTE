@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller outputs
+build/
+dist/
+
+# IDE/editor files
+.idea/
+.vscode/
+
+# Local runtime data
+clientes.json
+license.key

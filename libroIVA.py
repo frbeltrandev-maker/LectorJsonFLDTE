@@ -8,7 +8,7 @@ from tkinter import ttk, filedialog, messagebox
 import openpyxl
 from openpyxl.styles import Alignment, Font,Border, Side
 from openpyxl.utils import get_column_letter
-from clientes_store import cargar_clientes, guardar_cliente,editar_cliente, eliminar_cliente
+from storage.clientes_store import cargar_clientes, guardar_cliente,editar_cliente, eliminar_cliente
 
 def variables_crecientes():
     return {
