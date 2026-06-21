@@ -12,6 +12,7 @@ from dte.calculations import (
     calcular_valores_resumen,
     iterar_tributos_conocidos,
 )
+from dte.extractor import obtener_contenido_dte, obtener_fecha_formateada_dte
 from dte.reader import cargar_datos_archivo
 from dte.types import (
     DTE_COMPRA,
@@ -511,16 +512,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 if not archivo_json:
                     continue
 
-                # Detectar si los datos están en la raíz o en un nivel anidado
-                if 'identificacion' in archivo_json and 'emisor' in archivo_json and 'resumen' in archivo_json:
-                    contenido = archivo_json
-                else:
-                    contenido = None
-                    for valor in archivo_json.values():
-                        if isinstance(valor,
-                                      dict) and 'identificacion' in valor and 'emisor' in valor and 'resumen' in valor:
-                            contenido = valor
-                            break
+                contenido = obtener_contenido_dte(archivo_json, "emisor")
 
                 if not contenido:
                     print(f"Estructura no válida en el archivo {nombre_de_archivo}")
@@ -537,11 +529,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 tipoDte = identificacion.get('tipoDte')
                 fecEmi = identificacion.get('fecEmi')
 
-                if fecEmi:
-                    date_obj = datetime.strptime(fecEmi, '%Y-%m-%d')
-                    formatted_date = date_obj.strftime('%d/%m/%Y')
-                else:
-                    formatted_date = ""
+                date_obj, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                 if tipoDte in DTE_COMPRA:
                     valores.update(calcular_valores_resumen(
@@ -674,16 +662,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 if not archivo_json:
                     continue
 
-                    # Detectar si los datos están en la raíz o en un nivel anidado
-                if 'identificacion' in archivo_json and 'receptor' in archivo_json and 'resumen' in archivo_json:
-                    contenido = archivo_json
-                else:
-                    contenido = None
-                    for valor in archivo_json.values():
-                        if isinstance(valor,
-                                      dict) and 'identificacion' in valor and 'receptor' in valor and 'resumen' in valor:
-                            contenido = valor
-                            break
+                contenido = obtener_contenido_dte(archivo_json, "receptor")
 
                 if not contenido:
                     print(f"⚠️ Estructura no válida en el archivo {nombre_de_archivo}")
@@ -700,11 +679,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 tipoDte = identificacion.get('tipoDte')
                 fecEmi = identificacion.get('fecEmi')  # B13
 
-                if fecEmi:
-                    date_obj = datetime.strptime(fecEmi, '%Y-%m-%d')
-                    formatted_date = date_obj.strftime('%d/%m/%Y')
-                else:
-                    formatted_date = ""
+                date_obj, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                 if tipoDte in DTE_COMPRA:
                     if tipoDte == DTE_NOTA_CREDITO:
@@ -836,10 +811,11 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             ruta_archivo = os.path.join(carpeta, nombre_archivo)
             if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
                 datos = cargar_datos_archivo(ruta_archivo)
-                if datos and 'identificacion' in datos and 'receptor' in datos and 'resumen' in datos:
-                    identificacion = datos['identificacion']
-                    receptor = datos['receptor']
-                    resumen = datos['resumen']
+                contenido = obtener_contenido_dte(datos, "receptor") if datos else None
+                if contenido:
+                    identificacion = contenido['identificacion']
+                    receptor = contenido['receptor']
+                    resumen = contenido['resumen']
                     tipoDte = identificacion.get('tipoDte')
                     fecEmi = identificacion.get('fecEmi')
                     horEmi = identificacion.get('horEmi')
@@ -847,7 +823,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
                     if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
-                        formatted_date = datetime.strptime(fecEmi, '%Y-%m-%d').strftime('%d/%m/%Y')
+                        _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
                         clave = (formatted_date, tipoDte)
                         valores_consumidor = calcular_valores_consumidor_final(
                             resumen,

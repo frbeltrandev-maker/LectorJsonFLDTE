@@ -1,5 +1,6 @@
 import os
-from datetime import datetime
+import queue
+import threading
 from openpyxl import Workbook
 from collections import defaultdict
 from openpyxl.styles import Font
@@ -14,14 +15,17 @@ from dte.calculations import (
     iterar_tributos_conocidos,
     obtener_total_compra_sujeto_excluido,
 )
-from dte.extractor import obtener_sello_recibido
+from dte.extractor import (
+    clasificar_documento_sujeto_excluido,
+    obtener_contenido_dte,
+    obtener_fecha_formateada_dte,
+    obtener_sello_recibido,
+)
 from dte.reader import cargar_datos_archivo
 from dte.types import (
     DTE_ANULABLES,
     DTE_COMPRA,
-    DTE_COMPRA_CON_FACTURA,
     DTE_COMPROBANTE_CREDITO_FISCAL,
-    DTE_COMPROBANTE_RETENCION,
     DTE_CONSUMIDOR_FINAL,
     DTE_FACTURA,
     DTE_FACTURA_EXPORTACION,
@@ -37,6 +41,8 @@ from dte.types import (
     TIPOS_DOCUMENTO,
 )
 from licensing.license_manager import validar_licencia, activar_gui
+from reports.anexos_compras import generar_anexo_compras
+from reports.anexos_retencion import generar_anexo_retencion
 
 
 def variables_crecientes():
@@ -78,233 +84,16 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
     var_creciente = variables_crecientes()
     archivos_no_json = []
     if tipo_documento == TIPO_DOCUMENTO_COMPRAS:
-        # Nuevo Libro de Trabajo
-        wb = Workbook()
-        # Creando hojas
-        ws_resumen = wb.active
-        ws_resumen.title = "Resumen de DTEs"
-        #ws_retencion = wb.create_sheet(title="Comprobantes de Retención")
-        ws_percepcion = wb.create_sheet(title="Percepción")
-        ws_errores = wb.create_sheet(title="Errores")
-
-        # Títulos de las hojas
-        encabezados_resumen = ["Fecha", "Clase de Documento", "Tipo de DTE", "Num Doc", "NRC", "Nombre de Proveedor",
-                               "Exenta/NoSuj", "IntE/S", "ImpE/S", "Internas Gravadas", "Internaciones Gravadas",
-                               "Importaciones Gravadas de Bienes", "Importaciones Gravadas de Servicio",
-                               "Credito Fiscal", "Monto Total", "Fovial", "Cotrans", "Percibido 1%", "Num_Anexo"]
-        #encabezados_retencion = ["NIT", "Fecha", "Tipo DTE", "Sello Recepcion", "CodGeneracion", "Monto Sujeto", "Monto de Retención","DUI", "Num_Anexo"]
-        encabezados_percepcion = ["NIT", "Fecha", "Tipo DTE", "Sello Recepcion", "CodGeneracion", "Monto Sujeto", "Monto de Percepción",
-                                 "DUI", "Num_Anexo"]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_resumen.append(encabezados_resumen)
-        #ws_retencion.append(encabezados_retencion)
-        ws_percepcion.append(encabezados_percepcion)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_resumen[1]:
-            cell.font = Font(bold=True)
-
-        #for cell in ws_retencion[1]:
-        #    cell.font = Font(bold=True)
-
-        for cell in ws_percepcion[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-            if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
-                print(f"Procesando archivo: {nombre_archivo}")
-                datos = cargar_datos_archivo(ruta_archivo)
-                if not datos:
-                    continue
-
-                # Detectar si los datos están en la raíz o en un nivel anidado
-                if 'identificacion' in datos and 'emisor' in datos and 'resumen' in datos:
-                    contenido = datos
-                else:
-                    contenido = None
-                    for valor in datos.values():
-                        if isinstance(valor,
-                                      dict) and 'identificacion' in valor and 'emisor' in valor and 'resumen' in valor:
-                            contenido = valor
-                            break
-
-                if not contenido:
-                    print(f"⚠️ Estructura no válida en el archivo {nombre_archivo}")
-                    continue
-
-                clase_doc = "4"
-                valores = inicializar_valores()
-
-                emisor = contenido['emisor']
-                identificacion = contenido['identificacion']
-                resumen = contenido['resumen']
-
-                fecEmi = identificacion.get('fecEmi')
-                tipoDte = identificacion.get('tipoDte')
-                sello_recibido = obtener_sello_recibido(contenido)
-
-                codigoGeneracion = identificacion.get('codigoGeneracion')
-                nrc = emisor.get('nrc')
-                nombre_emisor = emisor.get('nombre')
-                nit = emisor.get('nit')
-
-                if fecEmi:
-                    date_obj = datetime.strptime(fecEmi, '%Y-%m-%d')
-                    formatted_date = date_obj.strftime('%d/%m/%Y')
-                else:
-                    formatted_date = ""
-
-                if tipoDte in DTE_COMPRA_CON_FACTURA:
-                    valores.update(calcular_valores_resumen(
-                        resumen,
-                        campo_no_sujeta="totalNoSuj",
-                        campo_monto_total="montoTotalOperacion",
-                    ))
-
-                    for clave, valor in iterar_tributos_conocidos(resumen):
-                        valores[clave] = valor
-                        var_creciente[f"sum_{clave}"] += valor
-
-                    if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
-                        var_creciente['sum_ccf'] += 1
-                        var_creciente['sum_grav'] += valores['total_gravada']
-                        var_creciente['sum_total'] += valores['monto_total_operacion']
-                    if tipoDte == DTE_NOTA_CREDITO:
-                        var_creciente['sum_ntccredito'] += 1
-                        var_creciente['sum_grav'] -= valores['total_gravada']
-                        var_creciente['sum_total'] -= valores['monto_total_operacion']
-                    if tipoDte == DTE_NOTA_DEBITO:
-                        var_creciente['sum_ntcdebito'] += 1
-                        var_creciente['sum_grav'] += valores['total_gravada']
-                        var_creciente['sum_total'] += valores['monto_total_operacion']
-                    if tipoDte == DTE_FACTURA:
-                        var_creciente['sum_factura'] += 1                      
-
-                    # Agregar datos al resumen en Excel
-                    fila_resumen = [
-                        formatted_date, clase_doc, tipoDte, codigoGeneracion, nrc, nombre_emisor,
-                        valores['total_exenta'] + valores['total_no_sujeta'], 0, 0, valores['total_gravada'], 0,
-                        0, 0, valores['iva'], valores['monto_total_operacion'], valores['fovial'],
-                        valores['cotrans'], valores['iva_perci1'], 3
-                    ]
-                    ws_resumen.append(fila_resumen)
-
-                var_creciente['sum_docjson'] += 1
-
-                if valores['iva_perci1'] > 0:
-                    fila_percepcion = [
-                        nit, formatted_date, tipoDte, sello_recibido, codigoGeneracion,
-                        valores['total_gravada'], valores['iva_perci1'], "", 8
-                    ]
-                    ws_percepcion.append(fila_percepcion)
-
-            else:
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-
-        # Actualizar Treeview
-        doc_types = [
-            ("Facturas", var_creciente['sum_factura']),
-            ("Notas de Crédito", var_creciente['sum_ntccredito']),
-            ("Notas de Débito", var_creciente['sum_ntcdebito']),
-            ("Comprobantes de Crédito Fiscal", var_creciente['sum_ccf']),
-            ("Documentos Procesados", var_creciente['sum_docjson']),
-        ]
-
-        # Limpiar Treeview antes de insertar nuevos datos
+        doc_types = generar_anexo_compras(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-
         for item in doc_types:
             tree.insert("", tk.END, values=item)
-
-        # Guardar el archivo Excel
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for archivo in archivos_no_json:
-                ws_errores.append(archivo)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
         messagebox.showinfo("Compras", "Los archivos han sido procesados exitosamente.")
     elif tipo_documento == TIPO_DOCUMENTO_RETENCION:
-        wb = Workbook()
-        ws_retencion = wb.active
-        ws_retencion.title = "Comprobantes de Retención"
-        ws_errores = wb.create_sheet(title="Errores")
-
-        encabezados_retencion = [
-            "NIT", "Fecha", "Tipo DTE", "Sello Recepcion",
-            "CodGeneracion", "Monto Sujeto", "Monto de Retención",
-            "DUI", "Num_Anexo"
-        ]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_retencion.append(encabezados_retencion)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_retencion[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-
-            if not nombre_archivo.lower().endswith(".json"):
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-                continue
-
-            datos = cargar_datos_archivo(ruta_archivo)
-            if not datos:
-                archivos_no_json.append((nombre_archivo, "JSON inválido"))
-                continue
-
-            contenido = datos if 'identificacion' in datos else None
-            if not contenido:
-                archivos_no_json.append((nombre_archivo, "Estructura inválida"))
-                continue
-
-            identificacion = contenido['identificacion']
-            resumen = contenido['resumen']
-            emisor = contenido['emisor']
-
-            if identificacion.get('tipoDte') != DTE_COMPROBANTE_RETENCION:
-                continue
-
-            fecEmi = identificacion.get('fecEmi')
-            formatted_date = datetime.strptime(fecEmi, '%Y-%m-%d').strftime('%d/%m/%Y') if fecEmi else ""
-
-            fila = [
-                emisor.get('nit'),
-                formatted_date,
-                DTE_COMPROBANTE_RETENCION,
-                obtener_sello_recibido(contenido),
-                identificacion.get('codigoGeneracion'),
-                resumen.get('totalSujetoRetencion', 0.00),
-                resumen.get('totalIVAretenido', 0.00),
-                "",
-                7
-            ]
-            ws_retencion.append(fila)
-            var_creciente['sum_comproretencion'] += 1
-            var_creciente['sum_docjson'] += 1
-        # Treeview
+        doc_types = generar_anexo_retencion(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-        tree.insert("", tk.END, values=("Comprobantes de Retención", var_creciente['sum_comproretencion']))
-        tree.insert("", tk.END, values=("Documentos Procesados", var_creciente['sum_docjson']))
-
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for e in archivos_no_json:
-                ws_errores.append(e)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
+        for item in doc_types:
+            tree.insert("", tk.END, values=item)
         messagebox.showinfo("Retención", "Comprobantes de retención procesados correctamente.")
     elif tipo_documento == TIPO_DOCUMENTO_CONTRIBUYENTES:
         # Espacio reservado para implementar lógica de procesamiento para Contribuyentes
@@ -336,12 +125,13 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
                 print(f"Procesando archivo: {nombre_archivo}")
                 datos = cargar_datos_archivo(ruta_archivo)
-                if datos and 'identificacion' in datos and 'receptor' in datos and 'resumen' in datos:
+                contenido = obtener_contenido_dte(datos, "receptor") if datos else None
+                if contenido:
                     clase_doc = "4" #B
                     valores = inicializar_valores()
-                    receptor = datos['receptor']
-                    identificacion = datos['identificacion']
-                    resumen = datos['resumen']
+                    receptor = contenido['receptor']
+                    identificacion = contenido['identificacion']
+                    resumen = contenido['resumen']
                     fecEmi = identificacion.get('fecEmi') #A
                     tipoDte = identificacion.get('tipoDte') #C
                     num_control = identificacion.get('numeroControl') #D
@@ -352,11 +142,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                     nrc = receptor.get('nrc')
                     nombre_receptor = receptor.get('nombre')
 
-                    if fecEmi:
-                        date_obj = datetime.strptime(fecEmi, '%Y-%m-%d')
-                        formatted_date = date_obj.strftime('%d/%m/%Y')
-                    else:
-                        formatted_date = ""
+                    _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                     if tipoDte in DTE_COMPRA:
                         if tipoDte == DTE_NOTA_CREDITO:
@@ -454,16 +240,17 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             ruta_archivo = os.path.join(carpeta, nombre_archivo)
             if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
                 datos = cargar_datos_archivo(ruta_archivo)
-                if datos and 'identificacion' in datos and 'receptor' in datos and 'resumen' in datos:
-                    identificacion = datos['identificacion']
-                    resumen = datos['resumen']
+                contenido = obtener_contenido_dte(datos, "receptor") if datos else None
+                if contenido:
+                    identificacion = contenido['identificacion']
+                    resumen = contenido['resumen']
                     tipoDte = identificacion.get('tipoDte')
                     fecEmi = identificacion.get('fecEmi')
                     horEmi= identificacion.get('horEmi')
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
                     if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
-                        formatted_date = datetime.strptime(fecEmi, '%Y-%m-%d').strftime('%d/%m/%Y')
+                        _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
                         clave = (formatted_date, tipoDte)
                         valores_consumidor = calcular_valores_consumidor_final(
                             resumen,
@@ -566,13 +353,14 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
                 print(f"Procesando archivo: {nombre_archivo}")
                 datos = cargar_datos_archivo(ruta_archivo)
-                if datos and 'identificacion' in datos and 'sujetoExcluido' in datos and 'resumen' in datos:
+                contenido = obtener_contenido_dte(datos, "sujetoExcluido") if datos else None
+                if contenido:
                     clase_doc = "4" #B
 
                     valores = inicializar_valores()
-                    sujetoExcluido = datos['sujetoExcluido']
-                    identificacion = datos['identificacion']
-                    resumen = datos['resumen']
+                    sujetoExcluido = contenido['sujetoExcluido']
+                    identificacion = contenido['identificacion']
+                    resumen = contenido['resumen']
                     fecEmi = identificacion.get('fecEmi') #A
                     tipoDte = identificacion.get('tipoDte') #C
                     numDocumento = sujetoExcluido.get('numDocumento')
@@ -580,24 +368,8 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                     sello_recibido = obtener_sello_recibido(datos)
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
-                    if numDocumento and isinstance(numDocumento, str):
-                        longitud = len(numDocumento)
-                        if 9 <= longitud <= 10:
-                            tipoDocumento = 2
-                        elif 14 <= longitud <= 17:
-                            tipoDocumento = 1
-                        elif longitud > 17:
-                            tipoDocumento = 3
-                        else:
-                            tipoDocumento = None  # o algún valor por defecto si no cae en ningún rango
-                    else:
-                        tipoDocumento = None  # si numDocumento no es string o es None
-
-                    if fecEmi:
-                        date_obj = datetime.strptime(fecEmi, '%Y-%m-%d')
-                        formatted_date = date_obj.strftime('%d/%m/%Y')
-                    else:
-                        formatted_date = ""
+                    tipoDocumento = clasificar_documento_sujeto_excluido(numDocumento)
+                    _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                     if tipoDte == DTE_SUJETO_EXCLUIDO:
                         var_creciente['sum_sujetoexcluido'] += 1
@@ -666,16 +438,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                 if not datos:
                     continue
 
-                # Detectar si los datos están en la raíz o en un nivel anidado
-                if 'identificacion' in datos and 'emisor' in datos and 'resumen' in datos:
-                    contenido = datos
-                else:
-                    contenido = None
-                    for valor in datos.values():
-                        if isinstance(valor,
-                                      dict) and 'identificacion' in valor and 'emisor' in valor and 'resumen' in valor:
-                            contenido = valor
-                            break
+                contenido = obtener_contenido_dte(datos, "emisor")
 
                 if not contenido:
                     print(f"⚠️ Estructura no válida en el archivo {nombre_archivo}")
@@ -737,7 +500,87 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
         messagebox.showerror("Error", "Debe seleccionar un tipo de documento válido.")
         return
 
-def iniciar_procesamiento(carpeta_entrada, carpeta_salida, nombre_archivo, tipo_documento, tree):
+def procesar_reporte_en_segundo_plano(
+    root,
+    carpeta,
+    salida,
+    nombre_archivo_salida,
+    tree,
+    progreso_var,
+    estado_var,
+    boton_iniciar,
+    generar_reporte,
+    titulo_reporte,
+    mensaje_exito,
+):
+    eventos = queue.Queue()
+    boton_iniciar.config(state="disabled")
+    progreso_var.set(0)
+    estado_var.set(f"Preparando {titulo_reporte}...")
+
+    def reportar_progreso(actual, total, archivo):
+        eventos.put(("progreso", actual, total, archivo))
+
+    def ejecutar_reporte():
+        try:
+            resumen = generar_reporte(
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                progreso=reportar_progreso,
+            )
+        except Exception as error:
+            eventos.put(("error", str(error)))
+        else:
+            eventos.put(("completado", resumen))
+
+    def procesar_eventos():
+        finalizado = False
+        while True:
+            try:
+                evento = eventos.get_nowait()
+            except queue.Empty:
+                break
+
+            tipo_evento = evento[0]
+            if tipo_evento == "progreso":
+                _, actual, total, archivo = evento
+                progreso_var.set((actual / total) * 100 if total else 0)
+                estado_var.set(f"Procesando {actual} de {total}: {archivo}")
+            elif tipo_evento == "completado":
+                _, resumen = evento
+                tree.delete(*tree.get_children())
+                for item in resumen:
+                    tree.insert("", tk.END, values=item)
+                estado_var.set(f"Procesamiento de {titulo_reporte} finalizado.")
+                messagebox.showinfo(titulo_reporte, mensaje_exito)
+                finalizado = True
+            elif tipo_evento == "error":
+                _, mensaje = evento
+                estado_var.set(f"El procesamiento de {titulo_reporte} no pudo completarse.")
+                messagebox.showerror(titulo_reporte, f"No se pudo procesar la carpeta:\n{mensaje}")
+                finalizado = True
+
+        if finalizado:
+            boton_iniciar.config(state="normal")
+        else:
+            root.after(100, procesar_eventos)
+
+    threading.Thread(target=ejecutar_reporte, daemon=True).start()
+    root.after(100, procesar_eventos)
+
+
+def iniciar_procesamiento(
+    root,
+    carpeta_entrada,
+    carpeta_salida,
+    nombre_archivo,
+    tipo_documento,
+    tree,
+    progreso_var,
+    estado_var,
+    boton_iniciar,
+):
     carpeta = carpeta_entrada.get()
     salida = carpeta_salida.get()
     nombre_archivo_salida = nombre_archivo.get()
@@ -745,7 +588,38 @@ def iniciar_procesamiento(carpeta_entrada, carpeta_salida, nombre_archivo, tipo_
     print(tipo_documento_seleccionado)
 
     if carpeta and salida and nombre_archivo_salida and tipo_documento_seleccionado:
-        # Llamar a procesar_carpeta con el tipo de documento seleccionado
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_COMPRAS:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_compras,
+                "Compras",
+                "Los archivos han sido procesados exitosamente.",
+            )
+            return
+
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_RETENCION:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_retencion,
+                "Retención",
+                "Comprobantes de retención procesados correctamente.",
+            )
+            return
+
         procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_documento_seleccionado)
     else:
         # Mostrar advertencia si falta algún campo
@@ -789,7 +663,7 @@ def primary_window():
     
     root.resizable(False, False) 
     #root.update_idletasks()
-    centrar_ventana(root,600,400)
+    centrar_ventana(root,600,460)
     
     
     # Configurar estilos para el Combobox
@@ -841,15 +715,48 @@ def primary_window():
     tk.Label(frame_entradas, text="Nombre del archivo de salida (.xlsx):").grid(row=3, column=0, padx=5, pady=5)
     tk.Entry(frame_entradas, textvariable=nombre_archivo, width=50).grid(row=3, column=1, padx=5, pady=5)
 
-    # Botón para iniciar el procesamiento
-    tk.Button(
+    progreso_var = tk.DoubleVar(value=0)
+    estado_var = tk.StringVar(value="")
+
+    boton_iniciar = tk.Button(
         frame_entradas,
         text="Iniciar procesamiento",
-        command=lambda: iniciar_procesamiento(carpeta_entrada, carpeta_salida, nombre_archivo, tipo_documento, tree)
-    ).grid(row=4, column=1, pady=10)
+        command=lambda: iniciar_procesamiento(
+            root,
+            carpeta_entrada,
+            carpeta_salida,
+            nombre_archivo,
+            tipo_documento,
+            tree,
+            progreso_var,
+            estado_var,
+            boton_iniciar,
+        ),
+    )
+    boton_iniciar.grid(row=4, column=1, pady=10)
 
     # Botón para limpiar los campos
     tk.Button(frame_entradas, text="Limpiar", command=lambda: limpiar_campos(tipo_documento, carpeta_entrada, carpeta_salida, nombre_archivo, tree)).grid(row=4, column=2, pady=10)
+
+    progreso = ttk.Progressbar(
+        frame_entradas,
+        variable=progreso_var,
+        maximum=100,
+        mode="determinate",
+        length=360,
+    )
+    progreso.grid(row=5, column=1, pady=(0, 3))
+    tk.Label(
+        frame_entradas,
+        textvariable=estado_var,
+        anchor="w",
+        justify="left",
+        wraplength=360,
+    ).grid(
+        row=6,
+        column=1,
+        pady=(0, 5),
+    )
 
     # Frame para el Treeview
     frame_treeview = tk.Frame(root)
