@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime
 from openpyxl import Workbook
 from collections import defaultdict
@@ -9,6 +8,34 @@ from tkinter import ttk, filedialog, messagebox
 import subprocess
 import sys
 from libroIVA import create_secondary_window,centrar_ventana
+from dte.calculations import (
+    calcular_valores_consumidor_final,
+    calcular_valores_resumen,
+    iterar_tributos_conocidos,
+    obtener_total_compra_sujeto_excluido,
+)
+from dte.extractor import obtener_sello_recibido
+from dte.reader import cargar_datos_archivo
+from dte.types import (
+    DTE_ANULABLES,
+    DTE_COMPRA,
+    DTE_COMPRA_CON_FACTURA,
+    DTE_COMPROBANTE_CREDITO_FISCAL,
+    DTE_COMPROBANTE_RETENCION,
+    DTE_CONSUMIDOR_FINAL,
+    DTE_FACTURA,
+    DTE_FACTURA_EXPORTACION,
+    DTE_NOTA_CREDITO,
+    DTE_NOTA_DEBITO,
+    DTE_SUJETO_EXCLUIDO,
+    TIPO_DOCUMENTO_ANULADOS,
+    TIPO_DOCUMENTO_COMPRAS,
+    TIPO_DOCUMENTO_CONSUMIDOR_FINAL,
+    TIPO_DOCUMENTO_CONTRIBUYENTES,
+    TIPO_DOCUMENTO_RETENCION,
+    TIPO_DOCUMENTO_SUJETO_EXCLUIDO,
+    TIPOS_DOCUMENTO,
+)
 from licensing.license_manager import validar_licencia, activar_gui
 
 
@@ -47,27 +74,10 @@ def inicializar_valores():
         'total_Compra':0
     }
 
-def cargar_datos_archivo(ruta):
-    codificaciones = ['utf-8-sig', 'latin-1', 'cp1252']
-    for codificacion in codificaciones:
-        try:
-            with open(ruta, 'r', encoding=codificacion) as archivo:
-                contenido = archivo.read()
-                if not contenido.strip():
-                    print(f"El archivo {ruta} está vacío.")
-                    return None
-                electronicas_coasso = json.loads(contenido)
-                return electronicas_coasso
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"Error decodificando JSON en el archivo {ruta} con codificación {codificacion}: {e}")
-        except Exception as e:
-            print(f"Error inesperado en el archivo {ruta} con codificación {codificacion}: {e}")
-    return None
-
 def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_documento):
     var_creciente = variables_crecientes()
     archivos_no_json = []
-    if tipo_documento == "Compras":
+    if tipo_documento == TIPO_DOCUMENTO_COMPRAS:
         # Nuevo Libro de Trabajo
         wb = Workbook()
         # Creando hojas
@@ -149,38 +159,30 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                 else:
                     formatted_date = ""
 
-                if tipoDte in ["03", "05", "06", "01"]:
-                    valores['total_exenta'] = resumen.get('totalExenta', 0.00)-resumen.get('descuExenta', 0.00)
-                    valores['total_no_sujeta'] = resumen.get('totalNoSuj', 0.00)-resumen.get('descuNoSuj', 0.00)
-                    valores['total_gravada'] = resumen.get('totalGravada', 0.00)-resumen.get('descuGravada', 0.00)
-                    valores['monto_total_operacion'] = resumen.get('montoTotalOperacion', 0.00)
-                    valores['iva_perci1'] = resumen.get('ivaPerci1', 0.00)
+                if tipoDte in DTE_COMPRA_CON_FACTURA:
+                    valores.update(calcular_valores_resumen(
+                        resumen,
+                        campo_no_sujeta="totalNoSuj",
+                        campo_monto_total="montoTotalOperacion",
+                    ))
 
-                    if 'tributos' in resumen and resumen['tributos'] is not None:
-                        for tributo in resumen['tributos']:
-                            if tributo.get('codigo') == 'D1':
-                                valores['fovial'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_fovial'] += valores['fovial']
-                            if tributo.get('codigo') == 'C8':
-                                valores['cotrans'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_cotrans'] += valores['cotrans']
-                            if tributo.get('codigo') == '20':
-                                valores['iva'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_iva'] += valores['iva']
+                    for clave, valor in iterar_tributos_conocidos(resumen):
+                        valores[clave] = valor
+                        var_creciente[f"sum_{clave}"] += valor
 
-                    if tipoDte == "03":
+                    if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
                         var_creciente['sum_ccf'] += 1
                         var_creciente['sum_grav'] += valores['total_gravada']
                         var_creciente['sum_total'] += valores['monto_total_operacion']
-                    if tipoDte == "05":
+                    if tipoDte == DTE_NOTA_CREDITO:
                         var_creciente['sum_ntccredito'] += 1
                         var_creciente['sum_grav'] -= valores['total_gravada']
                         var_creciente['sum_total'] -= valores['monto_total_operacion']
-                    if tipoDte == "06":
+                    if tipoDte == DTE_NOTA_DEBITO:
                         var_creciente['sum_ntcdebito'] += 1
                         var_creciente['sum_grav'] += valores['total_gravada']
                         var_creciente['sum_total'] += valores['monto_total_operacion']
-                    if tipoDte == "01":
+                    if tipoDte == DTE_FACTURA:
                         var_creciente['sum_factura'] += 1                      
 
                     # Agregar datos al resumen en Excel
@@ -228,7 +230,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
         messagebox.showinfo("Compras", "Los archivos han sido procesados exitosamente.")
-    elif tipo_documento == "Comprobante de Retención":
+    elif tipo_documento == TIPO_DOCUMENTO_RETENCION:
         wb = Workbook()
         ws_retencion = wb.active
         ws_retencion.title = "Comprobantes de Retención"
@@ -271,7 +273,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             resumen = contenido['resumen']
             emisor = contenido['emisor']
 
-            if identificacion.get('tipoDte') != "07":
+            if identificacion.get('tipoDte') != DTE_COMPROBANTE_RETENCION:
                 continue
 
             fecEmi = identificacion.get('fecEmi')
@@ -280,7 +282,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             fila = [
                 emisor.get('nit'),
                 formatted_date,
-                "07",
+                DTE_COMPROBANTE_RETENCION,
                 obtener_sello_recibido(contenido),
                 identificacion.get('codigoGeneracion'),
                 resumen.get('totalSujetoRetencion', 0.00),
@@ -304,7 +306,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
         messagebox.showinfo("Retención", "Comprobantes de retención procesados correctamente.")
-    elif tipo_documento == "Contribuyentes":
+    elif tipo_documento == TIPO_DOCUMENTO_CONTRIBUYENTES:
         # Espacio reservado para implementar lógica de procesamiento para Contribuyentes
         # Nuevo Libro de Trabajo
         wb = Workbook()
@@ -356,50 +358,35 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                     else:
                         formatted_date = ""
 
-                    if tipoDte in ["03", "05", "06",]:
-                        total_exenta = resumen.get('totalExenta', 0.00)
-                        descu_exenta = resumen.get('descuExenta', 0.00)
-
-                        total_no_suj = resumen.get('totalNoGravado', 0.00)
-                        descu_no_suj = resumen.get('descuNoSuj', 0.00)
-
-                        total_gravada = resumen.get('totalGravada', 0.00)
-                        descu_gravada = resumen.get('descuGravada', 0.00)
-                        if tipoDte == "05":
-                            monto_total = resumen.get('montoTotalOperacion', 0.00)
+                    if tipoDte in DTE_COMPRA:
+                        if tipoDte == DTE_NOTA_CREDITO:
+                            campo_monto_total = "montoTotalOperacion"
                         else:
-                            monto_total = resumen.get('totalPagar', 0.00)
+                            campo_monto_total = "totalPagar"
 
-                        valores['total_exenta'] = total_exenta - descu_exenta
-                        valores['total_no_sujeta'] = total_no_suj - descu_no_suj
-                        valores['sub_total_ventas'] = total_gravada - descu_gravada
-                        valores['monto_total_operacion'] = monto_total
-                        valores['iva_perci1'] = resumen.get('ivaPerci1', 0.00)
-                        if 'tributos' in resumen and resumen['tributos'] is not None:
-                            for tributo in resumen['tributos']:
-                                if tributo.get('codigo') == 'D1':
-                                    valores['fovial'] = tributo.get('valor', 0.00)
-                                    var_creciente['sum_fovial'] += valores['fovial']
-                                if tributo.get('codigo') == 'C8':
-                                    valores['cotrans'] = tributo.get('valor', 0.00)
-                                    var_creciente['sum_cotrans'] += valores['cotrans']
-                                if tributo.get('codigo') == '20':
-                                    valores['iva'] = tributo.get('valor', 0.00)
-                                    var_creciente['sum_iva'] += valores['iva']
+                        valores.update(calcular_valores_resumen(
+                            resumen,
+                            campo_no_sujeta="totalNoGravado",
+                            campo_monto_total=campo_monto_total,
+                            clave_gravada="sub_total_ventas",
+                        ))
+                        for clave, valor in iterar_tributos_conocidos(resumen):
+                            valores[clave] = valor
+                            var_creciente[f"sum_{clave}"] += valor
 
-                        if tipoDte == "03":
+                        if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
                             var_creciente['sum_ccf'] += 1
                             var_creciente['sum_grav'] += valores['sub_total_ventas']
                             var_creciente['sum_total'] += valores['monto_total_operacion']
-                        if tipoDte == "05":
+                        if tipoDte == DTE_NOTA_CREDITO:
                             var_creciente['sum_ntccredito'] += 1
                             var_creciente['sum_grav'] -= valores['sub_total_ventas']
                             var_creciente['sum_total'] -= valores['monto_total_operacion']
-                        if tipoDte == "06":
+                        if tipoDte == DTE_NOTA_DEBITO:
                             var_creciente['sum_ntcdebito'] += 1
                             var_creciente['sum_grav'] += valores['sub_total_ventas']
                             var_creciente['sum_total'] += valores['monto_total_operacion']
-                        if tipoDte == "01":
+                        if tipoDte == DTE_FACTURA:
                             var_creciente['sum_factura'] += 1
 
                         # Agregar datos al resumen en Excel
@@ -438,7 +425,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
 
         messagebox.showinfo("Ventas a Contribuyentes", "Los archivos han sido procesados exitosamente.")
 
-    elif tipo_documento == "Consumidor Final":
+    elif tipo_documento == TIPO_DOCUMENTO_CONSUMIDOR_FINAL:
         # Espacio reservado para implementar lógica de procesamiento para Consumidor Final
         # Nuevo Libro de Trabajo
         wb = Workbook()
@@ -475,29 +462,18 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                     horEmi= identificacion.get('horEmi')
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
-                    if fecEmi and tipoDte in ["01", "11"]:
+                    if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
                         formatted_date = datetime.strptime(fecEmi, '%Y-%m-%d').strftime('%d/%m/%Y')
                         clave = (formatted_date, tipoDte)
-                        total_exenta = resumen.get('totalExenta', 0.00)
-                        descu_exenta = resumen.get('descuExenta', 0.00)
-
-                        total_no_suj = resumen.get('totalNoSuj', 0.00)
-                        descu_no_suj = resumen.get('descuNoSuj', 0.00)
-
-                        total_no_gravado = resumen.get('totalNoGravado', 0.00)
-                        # normalmente no lleva descuento, pero lo dejo separado por claridad
-
-                        total_gravada = resumen.get('totalGravada', 0.00)
-                        descu_gravada = resumen.get('descuGravada', 0.00)
+                        valores_consumidor = calcular_valores_consumidor_final(
+                            resumen,
+                            campo_iva="ivaRetenido",
+                            clave_iva="iva",
+                        )
                         agrupados[clave].append({
                             "codigo": codigoGeneracion,
                             "horEmi": horEmi,
-                            "total_exenta": total_exenta - descu_exenta,
-                            "total_no_sujeta": total_no_suj - descu_no_suj,
-                            "total_no_gravado": total_no_gravado,
-                            "total_gravada": total_gravada - descu_gravada,
-                            "monto_total_operacion": resumen.get('montoTotalOperacion', 0.00),
-                            "iva": resumen.get('ivaRetenido', 0.00)
+                            **valores_consumidor,
                         })
                         var_creciente['sum_docjson'] += 1
                 else:
@@ -523,14 +499,14 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                 cod_inicio, cod_fin, ""
             ]
 
-            if tipoDte == "01":
+            if tipoDte == DTE_FACTURA:
                 var_creciente['sum_factura'] += len(documentos)
                 fila_resumen += [
                     total_exenta, 0, total_no_sujeta,
                     total_gravada, 0, 0, 0, 0, 0,
                     monto_total_operacion, "", "", 2
                 ]
-            elif tipoDte == "11":
+            elif tipoDte == DTE_FACTURA_EXPORTACION:
                 var_creciente['sum_export'] += len(documentos)
                 fila_resumen += [
                     total_exenta, 0, total_no_sujeta,0,
@@ -567,7 +543,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
 
         messagebox.showinfo("Ventas a Consumidor Final", "Los archivos han sido procesados exitosamente.")
 
-    elif tipo_documento == "Sujeto Excluido":
+    elif tipo_documento == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
         wb = Workbook()
         # Creando hojas
         ws_resumen = wb.active
@@ -623,9 +599,9 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                     else:
                         formatted_date = ""
 
-                    if tipoDte in ["14"]:
+                    if tipoDte == DTE_SUJETO_EXCLUIDO:
                         var_creciente['sum_sujetoexcluido'] += 1
-                        valores['total_Compra']=resumen.get('totalCompra',0.00)
+                        valores['total_Compra'] = obtener_total_compra_sujeto_excluido(resumen)
 
                         # Agregar datos al resumen en Excel
                         fila_resumen = [tipoDocumento,numDocumento,nombre,formatted_date,sello_recibido, codigoGeneracion, valores['total_Compra'],0,"","","","",5]
@@ -661,7 +637,7 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
         messagebox.showinfo("Facturas Sujeto Excluido", "Los archivos han sido procesados exitosamente.")
-    elif tipo_documento == "Documentos Anulados":
+    elif tipo_documento == TIPO_DOCUMENTO_ANULADOS:
         # Nuevo Libro de Trabajo
         wb = Workbook()
         # Creando hojas
@@ -714,16 +690,16 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
                 sello_recibido = obtener_sello_recibido(contenido)
                 codigoGeneracion = identificacion.get('codigoGeneracion')
 
-                if tipoDte in ["03", "05", "11", "01", "14" ]:
-                    if tipoDte == "01":
+                if tipoDte in DTE_ANULABLES:
+                    if tipoDte == DTE_FACTURA:
                         var_creciente['sum_factura'] += 1
-                    if tipoDte == "03":
+                    if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
                         var_creciente['sum_ccf'] +=1
-                    if tipoDte == "05":
+                    if tipoDte == DTE_NOTA_CREDITO:
                         var_creciente['sum_ntccredito'] += 1
-                    if tipoDte == "11":
+                    if tipoDte == DTE_FACTURA_EXPORTACION:
                         var_creciente['sum_export'] += 1
-                    if tipoDte == "14":
+                    if tipoDte == DTE_SUJETO_EXCLUIDO:
                         var_creciente['sum_sujetoexcluido'] += 1
                     fila_anulado = [numerocontrol,clase_doc,0,0,tipoDte,tipo_detalle,sello_recibido,0,0,codigoGeneracion]
                     ws_resumen.append(fila_anulado)
@@ -757,26 +733,9 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
         messagebox.showinfo("DTEs Anulados", "Han sido procesados exitosamente.")
-    elif tipo_documento not in ["Compras", "Contribuyentes", "Consumidor Final","Sujeto Excluido"]:
+    elif tipo_documento not in TIPOS_DOCUMENTO:
         messagebox.showerror("Error", "Debe seleccionar un tipo de documento válido.")
         return
-
-# Función para obtener el sello recibido
-def obtener_sello_recibido(datos):
-    campos_posibles = ['SelloRecepcion','selloRecepcion',"response", 'responseMH', 'ResponseMH', 'respuestaHacienda']
-    for campo in campos_posibles:
-        if campo in datos:
-            valor = datos[campo]
-            if isinstance(valor, dict):
-                return valor.get('selloRecibido')
-            elif isinstance(valor, str):
-                # Si el campo directamente es un string que representa el sello
-                return valor
-    # También puede estar directo en la raíz
-    valor = datos.get('selloRecibido')
-    if isinstance(valor, str):
-        return valor
-    return None
 
 def iniciar_procesamiento(carpeta_entrada, carpeta_salida, nombre_archivo, tipo_documento, tree):
     carpeta = carpeta_entrada.get()
@@ -861,7 +820,7 @@ def primary_window():
     combo_tipo_documento = ttk.Combobox(
         frame_entradas,
         textvariable=tipo_documento,
-        values=["Compras", "Contribuyentes", "Consumidor Final","Comprobante de Retención", "Sujeto Excluido","Documentos Anulados"],
+        values=TIPOS_DOCUMENTO,
         state="readonly",
         width=47
     )

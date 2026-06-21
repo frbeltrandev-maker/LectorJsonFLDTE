@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tkinter as tk
@@ -8,6 +7,25 @@ from tkinter import ttk, filedialog, messagebox
 import openpyxl
 from openpyxl.styles import Alignment, Font,Border, Side
 from openpyxl.utils import get_column_letter
+from dte.calculations import (
+    calcular_valores_consumidor_final,
+    calcular_valores_resumen,
+    iterar_tributos_conocidos,
+)
+from dte.reader import cargar_datos_archivo
+from dte.types import (
+    DTE_COMPRA,
+    DTE_COMPROBANTE_CREDITO_FISCAL,
+    DTE_CONSUMIDOR_FINAL,
+    DTE_FACTURA,
+    DTE_FACTURA_EXPORTACION,
+    DTE_NOTA_CREDITO,
+    DTE_NOTA_DEBITO,
+    TIPO_LIBRO_COMPRAS,
+    TIPO_LIBRO_VENTAS_CONSUMIDOR_FINAL,
+    TIPO_LIBRO_VENTAS_CONTRIBUYENTES,
+    TIPOS_LIBRO_IVA,
+)
 from storage.clientes_store import cargar_clientes, guardar_cliente,editar_cliente, eliminar_cliente
 
 def variables_crecientes():
@@ -34,22 +52,6 @@ def inicializar_valores():
         'total_iva_retenido': 0
     }
 
-def cargar_datos_archivo(ruta):
-    codificaciones = ['utf-8-sig', 'latin-1', 'cp1252']
-    for codificacion in codificaciones:
-        try:
-            with open(ruta, 'r', encoding=codificacion) as archivo:
-                contenido = archivo.read()
-                if not contenido.strip():
-                    print(f"El archivo {ruta} está vacío.")
-                    return None
-                electronicas_coasso = json.loads(contenido)
-                return electronicas_coasso
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"Error decodificando JSON en el archivo {ruta} con codificación {codificacion}: {e}")
-        except Exception as e:
-            print(f"Error inesperado en el archivo {ruta} con codificación {codificacion}: {e}")
-    return None
 def format_nit_input(*args):
     text = nit_var.get().replace('-', '')  # Eliminar guiones
     if len(text) > 3:
@@ -465,7 +467,7 @@ def crear_libro_excel(encabezado_1, encabezado_2, titulo_libro, nombre_contribuy
 
 def generar_libro_excel(carpeta,salida,tipo_libro):
     var_creciente = variables_crecientes()
-    if tipo_libro == "Libro de Compras":
+    if tipo_libro == TIPO_LIBRO_COMPRAS:
         nombre_contribuyente = nombre_contri_var.get()
         nrce = nrc_entry.get()
         nit = nit_entry.get()
@@ -541,30 +543,22 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 else:
                     formatted_date = ""
 
-                if tipoDte in ["03", "05", "06"]:
-                    valores['total_exenta'] = resumen.get('totalExenta', 0.00) - resumen.get('descuExenta', 0.00)
-                    valores['total_no_sujeta'] = resumen.get('totalNoSuj', 0.00) - resumen.get('descuNoSuj', 0.00)
-                    valores['total_gravada'] = resumen.get('totalGravada', 0.00) - resumen.get('descuGravada', 0.00)
-                    valores['monto_total_operacion'] = resumen.get('montoTotalOperacion', 0.00)
-                    valores['iva_perci1'] = resumen.get('ivaPerci1', 0.00)
+                if tipoDte in DTE_COMPRA:
+                    valores.update(calcular_valores_resumen(
+                        resumen,
+                        campo_no_sujeta="totalNoSuj",
+                        campo_monto_total="montoTotalOperacion",
+                    ))
 
-                    if 'tributos' in resumen and resumen['tributos'] is not None:
-                        for tributo in resumen['tributos']:
-                            if tributo.get('codigo') == 'D1':
-                                valores['fovial'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_fovial'] += valores['fovial']
-                            if tributo.get('codigo') == 'C8':
-                                valores['cotrans'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_cotrans'] += valores['cotrans']
-                            if tributo.get('codigo') == '20':
-                                valores['iva'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_iva'] += valores['iva']
+                    for clave, valor in iterar_tributos_conocidos(resumen):
+                        valores[clave] = valor
+                        var_creciente[f"sum_{clave}"] += valor
 
-                    if tipoDte in ["03", "06"]:
+                    if tipoDte in (DTE_COMPROBANTE_CREDITO_FISCAL, DTE_NOTA_DEBITO):
                         var_creciente['sum_grav'] += valores['total_gravada']
                         var_creciente['sum_total'] += valores['monto_total_operacion']
 
-                    if tipoDte == "05":  # Nota de crédito
+                    if tipoDte == DTE_NOTA_CREDITO:  # Nota de crédito
                         valores = {key: -abs(value) for key, value in valores.items()}
                         var_creciente['sum_grav'] -= valores['total_gravada']
                         var_creciente['sum_total'] -= valores['monto_total_operacion']
@@ -618,7 +612,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             resumen_operaciones=None
         )
         messagebox.showinfo("Éxito", "El libro de Compras se ha generado exitosamente.")
-    elif tipo_libro == "Ventas a Contribuyentes":
+    elif tipo_libro == TIPO_LIBRO_VENTAS_CONTRIBUYENTES:
         nombre_contribuyente = nombre_contri_var.get()
         nrce = nrc_entry.get()
         nit = nit_entry.get()
@@ -712,44 +706,28 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 else:
                     formatted_date = ""
 
-                if tipoDte in ["03", "05", "06"]:
-                    total_exenta = resumen.get('totalExenta', 0.00)
-                    descu_exenta = resumen.get('descuExenta', 0.00)
-
-                    total_no_suj = resumen.get('totalNoGravado', 0.00)
-                    descu_no_suj = resumen.get('descuNoSuj', 0.00)
-
-                    total_gravada = resumen.get('totalGravada', 0.00)
-                    descu_gravada = resumen.get('descuGravada', 0.00)
-                    if tipoDte == "05":
-                        monto_total = resumen.get('montoTotalOperacion', 0.00)
+                if tipoDte in DTE_COMPRA:
+                    if tipoDte == DTE_NOTA_CREDITO:
+                        campo_monto_total = "montoTotalOperacion"
                     else:
-                        monto_total = resumen.get('totalPagar', 0.00)
+                        campo_monto_total = "totalPagar"
 
-                    valores['total_exenta'] = total_exenta - descu_exenta
-                    valores['total_no_sujeta'] = total_no_suj - descu_no_suj
-                    valores['sub_total_ventas'] = total_gravada - descu_gravada
-                    valores['monto_total_operacion'] = monto_total # L13
-                    valores['iva_perci1'] = resumen.get('ivaPerci1', 0.00)  # M13
-                    valores['iva_ret1'] = resumen.get('ivaRete1', 0.00)  # M13
+                    valores.update(calcular_valores_resumen(
+                        resumen,
+                        campo_no_sujeta="totalNoGravado",
+                        campo_monto_total=campo_monto_total,
+                        clave_gravada="sub_total_ventas",
+                        incluir_retencion=True,
+                    ))
+                    for clave, valor in iterar_tributos_conocidos(resumen):
+                        valores[clave] = valor
+                        var_creciente[f"sum_{clave}"] += valor
 
-                    if 'tributos' in resumen and resumen['tributos'] is not None:
-                        for tributo in resumen['tributos']:
-                            if tributo.get('codigo') == 'D1':
-                                valores['fovial'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_fovial'] += valores['fovial']
-                            if tributo.get('codigo') == 'C8':
-                                valores['cotrans'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_cotrans'] += valores['cotrans']
-                            if tributo.get('codigo') == '20':
-                                valores['iva'] = tributo.get('valor', 0.00)
-                                var_creciente['sum_iva'] += valores['iva']
-
-                    if tipoDte in ["03", "06"]:
+                    if tipoDte in (DTE_COMPROBANTE_CREDITO_FISCAL, DTE_NOTA_DEBITO):
                         var_creciente['sum_grav'] += valores['sub_total_ventas']
                         var_creciente['sum_total'] += valores['monto_total_operacion']
 
-                    if tipoDte == "05":
+                    if tipoDte == DTE_NOTA_CREDITO:
                         valores = {key: -abs(value) for key, value in valores.items()}
                         var_creciente['sum_grav'] -= valores['sub_total_ventas']
                         var_creciente['sum_total'] -= valores['monto_total_operacion']
@@ -809,7 +787,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             resumen_operaciones
         )
         messagebox.showinfo("Éxito", "Libro de Ventas a Contribuyentes se ha generado exitosamente.")
-    elif tipo_libro == "Ventas a Consumidor Final":
+    elif tipo_libro == TIPO_LIBRO_VENTAS_CONSUMIDOR_FINAL:
         nombre_contribuyente = nombre_contri_var.get()
         nrce = nrc_entry.get()
         nit = nit_entry.get()
@@ -868,28 +846,19 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                     nombre = receptor.get('nombre')
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
-                    if fecEmi and tipoDte in ["01", "11"]:
+                    if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
                         formatted_date = datetime.strptime(fecEmi, '%Y-%m-%d').strftime('%d/%m/%Y')
                         clave = (formatted_date, tipoDte)
-                        total_exenta = resumen.get('totalExenta', 0.00)
-                        descu_exenta = resumen.get('descuExenta', 0.00)
-
-                        total_no_suj = resumen.get('totalNoSuj', 0.00)
-                        descu_no_suj = resumen.get('descuNoSuj', 0.00)
-
-                        total_no_gravado = resumen.get('totalNoGravado', 0.00)
-                        total_gravada = resumen.get('totalGravada', 0.00)
-                        descu_gravada = resumen.get('descuGravada', 0.00)
+                        valores_consumidor = calcular_valores_consumidor_final(
+                            resumen,
+                            campo_iva="ivaRete1",
+                            clave_iva="ivaRete1",
+                        )
                         agrupados[clave].append({
                             "codigo": codigoGeneracion,
                             "nombre": nombre,
                             "horEmi": horEmi,
-                            "total_exenta": total_exenta - descu_exenta,
-                            "total_no_sujeta": total_no_suj - descu_no_suj,
-                            "total_no_gravado": total_no_gravado,
-                            "total_gravada": total_gravada - descu_gravada,
-                            "monto_total_operacion": resumen.get('montoTotalOperacion', 0.00),
-                            "ivaRete1": resumen.get('ivaRete1', 0.00)
+                            **valores_consumidor,
                         })
                         var_creciente['sum_docjson'] += 1
 
@@ -913,7 +882,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 var_creciente['sum_docjson'] + 1, fecha, cod_inicio,cod_fin, nombre_proveedor,
             ]
 
-            if tipoDte == "01":
+            if tipoDte == DTE_FACTURA:
                 fila_resumen += [
                     total_exenta, total_gravada, 0,0, retencioniva,
                     monto_total_operacion,
@@ -925,7 +894,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 totales[4] += retencioniva
                 totales [5] +=monto_total_operacion
 
-            elif tipoDte == "11":
+            elif tipoDte == DTE_FACTURA_EXPORTACION:
                 fila_resumen += [
                     0, 0,total_gravada, 0,retencioniva,
                     monto_total_operacion,
@@ -968,7 +937,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             resumen_operaciones
         )
         messagebox.showinfo("Éxito", "Libro de Ventas a Consumidor Final se ha generado exitosamente.")
-    elif tipo_libro not in ["Libro de Compras", "Ventas a Contribuyentes", "Ventas a Consumidor Final"]:
+    elif tipo_libro not in TIPOS_LIBRO_IVA:
         messagebox.showerror("Error", "Debe seleccionar un tipo de libro válido.")
 
         return
@@ -985,7 +954,7 @@ def on_generate_book(ruta_entrada_var, ruta_salida_var, tipo_libro):
         messagebox.showwarning("Campos vacíos", "Por favor, complete todos los campos de entrada y salida.")
         return
 
-    if tipo_libro_seleccionado not in ["Libro de Compras", "Ventas a Contribuyentes", "Ventas a Consumidor Final"]:
+    if tipo_libro_seleccionado not in TIPOS_LIBRO_IVA:
         messagebox.showerror("Error", "Debe seleccionar un tipo de libro válido.")
         return
     generar_libro_excel(carpeta, salida, tipo_libro_seleccionado)
@@ -1045,7 +1014,7 @@ def create_secondary_window(ventanaprincipal):
     combo_tipo_libro = ttk.Combobox(
         datos_frame,
         textvariable=tipo_libro,
-        values=["Libro de Compras", "Ventas a Contribuyentes", "Ventas a Consumidor Final"],
+        values=TIPOS_LIBRO_IVA,
         state="readonly",
         width=25
     )
