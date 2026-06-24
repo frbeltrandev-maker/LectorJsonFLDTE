@@ -1,37 +1,11 @@
 import os
 import queue
 import threading
-from openpyxl import Workbook
-from collections import defaultdict
-from openpyxl.styles import Font
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import subprocess
 import sys
 from libroIVA import create_secondary_window,centrar_ventana
-from dte.calculations import (
-    calcular_valores_consumidor_final,
-    calcular_valores_resumen,
-    iterar_tributos_conocidos,
-    obtener_total_compra_sujeto_excluido,
-)
-from dte.extractor import (
-    clasificar_documento_sujeto_excluido,
-    obtener_contenido_dte,
-    obtener_fecha_formateada_dte,
-    obtener_sello_recibido,
-)
-from dte.reader import cargar_datos_archivo
 from dte.types import (
-    DTE_ANULABLES,
-    DTE_COMPRA,
-    DTE_COMPROBANTE_CREDITO_FISCAL,
-    DTE_CONSUMIDOR_FINAL,
-    DTE_FACTURA,
-    DTE_FACTURA_EXPORTACION,
-    DTE_NOTA_CREDITO,
-    DTE_NOTA_DEBITO,
-    DTE_SUJETO_EXCLUIDO,
     TIPO_DOCUMENTO_ANULADOS,
     TIPO_DOCUMENTO_COMPRAS,
     TIPO_DOCUMENTO_CONSUMIDOR_FINAL,
@@ -49,85 +23,38 @@ from reports.anexos_retencion import generar_anexo_retencion
 from reports.anexos_sujeto_excluido import generar_anexo_sujeto_excluido
 
 
-def variables_crecientes():
-    return {
-        'sum_factura': 0,
-        'sum_export': 0,
-        'sum_ntcdebito': 0,
-        'sum_ccf': 0,
-        'sum_ntccredito': 0,
-        'sum_comproretencion': 0,
-        'sum_sujetoexcluido': 0,
-        'sum_grav': 0.0,
-        'sum_iva': 0.0,
-        'sum_total': 0.0,
-        'sum_fovial': 0.0,
-        'sum_cotrans': 0.0,
-        'sum_docjson': 0
-    }
-
-def inicializar_valores():
-    return {
-        'fovial': 0,
-        'cotrans': 0,
-        'total_exenta': 0,
-        'total_gravada': 0,
-        'total_descuento_gravado': 0,
-        'total_no_sujeta': 0,
-        'total_no_gravado:': 0,
-        'sub_total_ventas': 0,
-        'iva': 0,
-        'monto_total_operacion': 0,
-        'iva_perci1': 0,
-        'total_sujeto_retencion': 0,
-        'total_iva_retenido': 0,
-        'total_Compra':0
-    }
-
-def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_documento):
-    var_creciente = variables_crecientes()
-    archivos_no_json = []
-    if tipo_documento == TIPO_DOCUMENTO_COMPRAS:
-        doc_types = generar_anexo_compras(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("Compras", "Los archivos han sido procesados exitosamente.")
-    elif tipo_documento == TIPO_DOCUMENTO_RETENCION:
-        doc_types = generar_anexo_retencion(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("Retención", "Comprobantes de retención procesados correctamente.")
-    elif tipo_documento == TIPO_DOCUMENTO_CONTRIBUYENTES:
-        doc_types = generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("Ventas a Contribuyentes", "Los archivos han sido procesados exitosamente.")
-
-    elif tipo_documento == TIPO_DOCUMENTO_CONSUMIDOR_FINAL:
-        doc_types = generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("Ventas a Consumidor Final", "Los archivos han sido procesados exitosamente.")
-
-    elif tipo_documento == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
-        doc_types = generar_anexo_sujeto_excluido(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("Facturas Sujeto Excluido", "Los archivos han sido procesados exitosamente.")
-    elif tipo_documento == TIPO_DOCUMENTO_ANULADOS:
-        doc_types = generar_anexo_anulados(carpeta, salida, nombre_archivo_salida)
-        tree.delete(*tree.get_children())
-        for item in doc_types:
-            tree.insert("", tk.END, values=item)
-        messagebox.showinfo("DTEs Anulados", "Han sido procesados exitosamente.")
-    elif tipo_documento not in TIPOS_DOCUMENTO:
-        messagebox.showerror("Error", "Debe seleccionar un tipo de documento válido.")
-        return
+REPORTES = {
+    TIPO_DOCUMENTO_COMPRAS: (
+        generar_anexo_compras,
+        "Compras",
+        "Los archivos han sido procesados exitosamente.",
+    ),
+    TIPO_DOCUMENTO_RETENCION: (
+        generar_anexo_retencion,
+        "Retención",
+        "Comprobantes de retención procesados correctamente.",
+    ),
+    TIPO_DOCUMENTO_CONTRIBUYENTES: (
+        generar_anexo_contribuyentes,
+        "Ventas a Contribuyentes",
+        "Los archivos han sido procesados exitosamente.",
+    ),
+    TIPO_DOCUMENTO_CONSUMIDOR_FINAL: (
+        generar_anexo_consumidor_final,
+        "Ventas a Consumidor Final",
+        "Los archivos han sido procesados exitosamente.",
+    ),
+    TIPO_DOCUMENTO_SUJETO_EXCLUIDO: (
+        generar_anexo_sujeto_excluido,
+        "Sujeto Excluido",
+        "Los archivos han sido procesados exitosamente.",
+    ),
+    TIPO_DOCUMENTO_ANULADOS: (
+        generar_anexo_anulados,
+        "Documentos Anulados",
+        "Han sido procesados exitosamente.",
+    ),
+}
 
 def procesar_reporte_en_segundo_plano(
     root,
@@ -216,110 +143,32 @@ def iniciar_procesamiento(
     tipo_documento_seleccionado = tipo_documento.get()  # Obtener el valor seleccionado del ComboBox
     print(tipo_documento_seleccionado)
 
-    if carpeta and salida and nombre_archivo_salida and tipo_documento_seleccionado:
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_COMPRAS:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_compras,
-                "Compras",
-                "Los archivos han sido procesados exitosamente.",
-            )
-            return
-
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_RETENCION:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_retencion,
-                "Retención",
-                "Comprobantes de retención procesados correctamente.",
-            )
-            return
-
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_CONTRIBUYENTES:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_contribuyentes,
-                "Ventas a Contribuyentes",
-                "Los archivos han sido procesados exitosamente.",
-            )
-            return
-
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_CONSUMIDOR_FINAL:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_consumidor_final,
-                "Ventas a Consumidor Final",
-                "Los archivos han sido procesados exitosamente.",
-            )
-            return
-
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_sujeto_excluido,
-                "Sujeto Excluido",
-                "Los archivos han sido procesados exitosamente.",
-            )
-            return
-
-        if tipo_documento_seleccionado == TIPO_DOCUMENTO_ANULADOS:
-            procesar_reporte_en_segundo_plano(
-                root,
-                carpeta,
-                salida,
-                nombre_archivo_salida,
-                tree,
-                progreso_var,
-                estado_var,
-                boton_iniciar,
-                generar_anexo_anulados,
-                "Documentos Anulados",
-                "Han sido procesados exitosamente.",
-            )
-            return
-
-        procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_documento_seleccionado)
-    else:
-        # Mostrar advertencia si falta algún campo
+    if not carpeta or not salida or not nombre_archivo_salida:
         messagebox.showwarning(
             "Campos vacíos",
             "Por favor, complete todos los campos y seleccione un tipo de documento antes de iniciar el procesamiento."
         )
+        return
+
+    reporte = REPORTES.get(tipo_documento_seleccionado)
+    if not reporte:
+        messagebox.showerror("Error", "Debe seleccionar un tipo de documento válido.")
+        return
+
+    generar_reporte, titulo_reporte, mensaje_exito = reporte
+    procesar_reporte_en_segundo_plano(
+        root,
+        carpeta,
+        salida,
+        nombre_archivo_salida,
+        tree,
+        progreso_var,
+        estado_var,
+        boton_iniciar,
+        generar_reporte,
+        titulo_reporte,
+        mensaje_exito,
+    )
 
 def limpiar_campos(tipo_documento,carpeta_entrada, carpeta_salida, nombre_archivo, tree):
     tipo_documento.set("Seleccionar...")
