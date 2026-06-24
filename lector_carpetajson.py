@@ -42,9 +42,11 @@ from dte.types import (
 )
 from licensing.license_manager import validar_licencia, activar_gui
 from reports.anexos_compras import generar_anexo_compras
+from reports.anexos_anulados import generar_anexo_anulados
 from reports.anexos_contribuyentes import generar_anexo_contribuyentes
 from reports.anexos_consumidor_final import generar_anexo_consumidor_final
 from reports.anexos_retencion import generar_anexo_retencion
+from reports.anexos_sujeto_excluido import generar_anexo_sujeto_excluido
 
 
 def variables_crecientes():
@@ -112,170 +114,16 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
         messagebox.showinfo("Ventas a Consumidor Final", "Los archivos han sido procesados exitosamente.")
 
     elif tipo_documento == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
-        wb = Workbook()
-        # Creando hojas
-        ws_resumen = wb.active
-        ws_resumen.title = "Sujeto Excluido"
-        ws_errores = wb.create_sheet(title="Errores")
-        encabezados_resumen = ["Tipo_Documento","Num_NIT/DUI","Razon Social", "F_Emision","Num_Serie","Num_Doc","Monto_Operacion","Monto_Retención(13%)",
-                               "Tipo_Op","Clasificacion","Sector","Tipo Costo/Gasto","Num_Anexo"]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_resumen.append(encabezados_resumen)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_resumen[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-            if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
-                print(f"Procesando archivo: {nombre_archivo}")
-                datos = cargar_datos_archivo(ruta_archivo)
-                contenido = obtener_contenido_dte(datos, "sujetoExcluido") if datos else None
-                if contenido:
-                    clase_doc = "4" #B
-
-                    valores = inicializar_valores()
-                    sujetoExcluido = contenido['sujetoExcluido']
-                    identificacion = contenido['identificacion']
-                    resumen = contenido['resumen']
-                    fecEmi = identificacion.get('fecEmi') #A
-                    tipoDte = identificacion.get('tipoDte') #C
-                    numDocumento = sujetoExcluido.get('numDocumento')
-                    nombre = sujetoExcluido.get('nombre')
-                    sello_recibido = obtener_sello_recibido(datos)
-                    codigoGeneracion = identificacion.get('codigoGeneracion')
-
-                    tipoDocumento = clasificar_documento_sujeto_excluido(numDocumento)
-                    _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
-
-                    if tipoDte == DTE_SUJETO_EXCLUIDO:
-                        var_creciente['sum_sujetoexcluido'] += 1
-                        valores['total_Compra'] = obtener_total_compra_sujeto_excluido(resumen)
-
-                        # Agregar datos al resumen en Excel
-                        fila_resumen = [tipoDocumento,numDocumento,nombre,formatted_date,sello_recibido, codigoGeneracion, valores['total_Compra'],0,"","","","",5]
-                        ws_resumen.append(fila_resumen)
-                    var_creciente['sum_docjson'] += 1
-                else:
-                    archivos_no_json.append((nombre_archivo, "Error al cargar JSON o campos faltantes"))
-            else:
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-                # Actualizar Treeview
-        doc_types = [
-              ("Facturas", var_creciente['sum_factura']),
-              ("Notas de Crédito", var_creciente['sum_ntccredito']),
-              ("Notas de Débito", var_creciente['sum_ntcdebito']),
-              ("Comprobantes de Crédito Fiscal", var_creciente['sum_ccf']),
-              ("Comprobantes de Retención", var_creciente['sum_comproretencion']),
-              ("Sujeto Excluido", var_creciente['sum_sujetoexcluido']),
-              ("Documentos Procesados", var_creciente['sum_docjson']),
-        ]
-
-        # Limpiar Treeview antes de insertar nuevos datos
+        doc_types = generar_anexo_sujeto_excluido(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-
         for item in doc_types:
             tree.insert("", tk.END, values=item)
-
-        # Guardar el archivo Excel
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for archivo in archivos_no_json:
-                ws_errores.append(archivo)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
         messagebox.showinfo("Facturas Sujeto Excluido", "Los archivos han sido procesados exitosamente.")
     elif tipo_documento == TIPO_DOCUMENTO_ANULADOS:
-        # Nuevo Libro de Trabajo
-        wb = Workbook()
-        # Creando hojas
-        ws_resumen = wb.active
-        ws_resumen.title = "Documentos Anulados"
-        ws_errores = wb.create_sheet(title="Errores")
-
-        # Títulos de las hojas
-        encabezado_anulados = ["Num_Resolucion", "Clase_Doc","Desde(Impreso)","Hasta(Impreso)","Tipo_doc","Tipo_det","Serie","Desde","Hasta","Cod_Generacion"]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_resumen.append(encabezado_anulados)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_resumen[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-            if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
-                print(f"Procesando archivo: {nombre_archivo}")
-                datos = cargar_datos_archivo(ruta_archivo)
-                if not datos:
-                    continue
-
-                contenido = obtener_contenido_dte(datos, "emisor")
-
-                if not contenido:
-                    print(f"⚠️ Estructura no válida en el archivo {nombre_archivo}")
-                    continue
-
-                identificacion = contenido['identificacion']
-
-                numerocontrol = identificacion.get('numeroControl')
-                clase_doc = "4"
-                tipoDte = identificacion.get('tipoDte')
-                tipo_detalle = "D"
-                sello_recibido = obtener_sello_recibido(contenido)
-                codigoGeneracion = identificacion.get('codigoGeneracion')
-
-                if tipoDte in DTE_ANULABLES:
-                    if tipoDte == DTE_FACTURA:
-                        var_creciente['sum_factura'] += 1
-                    if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
-                        var_creciente['sum_ccf'] +=1
-                    if tipoDte == DTE_NOTA_CREDITO:
-                        var_creciente['sum_ntccredito'] += 1
-                    if tipoDte == DTE_FACTURA_EXPORTACION:
-                        var_creciente['sum_export'] += 1
-                    if tipoDte == DTE_SUJETO_EXCLUIDO:
-                        var_creciente['sum_sujetoexcluido'] += 1
-                    fila_anulado = [numerocontrol,clase_doc,0,0,tipoDte,tipo_detalle,sello_recibido,0,0,codigoGeneracion]
-                    ws_resumen.append(fila_anulado)
-                    var_creciente['sum_docjson'] += 1
-
-                else:
-                    archivos_no_json.append((nombre_archivo, "Error al cargar JSON o campos faltantes"))
-            else:
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-        doc_types = [
-            ("Facturas", var_creciente['sum_factura']),
-            ("Comprobantes de Crédito Fiscal", var_creciente['sum_ccf']),
-            ("Notas de Crédito", var_creciente['sum_ntccredito']),
-            ("Notas de Débito", var_creciente['sum_ntcdebito']),
-            ("Facturas de exportacion", var_creciente['sum_export']),
-            ("Sujeto Excluido", var_creciente['sum_sujetoexcluido']),
-            ("Documentos Procesados", var_creciente['sum_docjson']),
-        ]
-        # Limpiar Treeview antes de insertar nuevos datos
+        doc_types = generar_anexo_anulados(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-
         for item in doc_types:
             tree.insert("", tk.END, values=item)
-
-        # Guardar el archivo Excel
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for archivo in archivos_no_json:
-                ws_errores.append(archivo)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
         messagebox.showinfo("DTEs Anulados", "Han sido procesados exitosamente.")
     elif tipo_documento not in TIPOS_DOCUMENTO:
         messagebox.showerror("Error", "Debe seleccionar un tipo de documento válido.")
@@ -430,6 +278,38 @@ def iniciar_procesamiento(
                 generar_anexo_consumidor_final,
                 "Ventas a Consumidor Final",
                 "Los archivos han sido procesados exitosamente.",
+            )
+            return
+
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_sujeto_excluido,
+                "Sujeto Excluido",
+                "Los archivos han sido procesados exitosamente.",
+            )
+            return
+
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_ANULADOS:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_anulados,
+                "Documentos Anulados",
+                "Han sido procesados exitosamente.",
             )
             return
 
