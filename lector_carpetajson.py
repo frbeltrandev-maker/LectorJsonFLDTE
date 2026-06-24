@@ -42,6 +42,8 @@ from dte.types import (
 )
 from licensing.license_manager import validar_licencia, activar_gui
 from reports.anexos_compras import generar_anexo_compras
+from reports.anexos_contribuyentes import generar_anexo_contribuyentes
+from reports.anexos_consumidor_final import generar_anexo_consumidor_final
 from reports.anexos_retencion import generar_anexo_retencion
 
 
@@ -96,238 +98,17 @@ def procesar_carpeta(carpeta, salida, nombre_archivo_salida, tree, tipo_document
             tree.insert("", tk.END, values=item)
         messagebox.showinfo("Retención", "Comprobantes de retención procesados correctamente.")
     elif tipo_documento == TIPO_DOCUMENTO_CONTRIBUYENTES:
-        # Espacio reservado para implementar lógica de procesamiento para Contribuyentes
-        # Nuevo Libro de Trabajo
-        wb = Workbook()
-        # Creando hojas
-        ws_resumen = wb.active
-        ws_resumen.title = "Ventas a Contribuyentes"
-        ws_errores = wb.create_sheet(title="Errores")
-
-        # Títulos de las hojas
-        encabezados_resumen = ["Fecha", "Clase de Documento", "Tipo de DTE", "Num_Control", "Num_Serie", "Num_Doc","Num_Interno","NRC","Nom_Proveedor",
-                               "Exenta","NoSuj", "Ventas Gravadas", "Debito Fiscal",
-                               "Venta a Terceros No Domiciliados ", "Debito Fiscal a terceros",
-                               "Total Ventas", "DUI", "Tipo_OP","Tipo_I", "Num_Anexo"]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_resumen.append(encabezados_resumen)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_resumen[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-            if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
-                print(f"Procesando archivo: {nombre_archivo}")
-                datos = cargar_datos_archivo(ruta_archivo)
-                contenido = obtener_contenido_dte(datos, "receptor") if datos else None
-                if contenido:
-                    clase_doc = "4" #B
-                    valores = inicializar_valores()
-                    receptor = contenido['receptor']
-                    identificacion = contenido['identificacion']
-                    resumen = contenido['resumen']
-                    fecEmi = identificacion.get('fecEmi') #A
-                    tipoDte = identificacion.get('tipoDte') #C
-                    num_control = identificacion.get('numeroControl') #D
-
-                    sello_recibido = obtener_sello_recibido(datos)
-
-                    codigoGeneracion = identificacion.get('codigoGeneracion')
-                    nrc = receptor.get('nrc')
-                    nombre_receptor = receptor.get('nombre')
-
-                    _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
-
-                    if tipoDte in DTE_COMPRA:
-                        if tipoDte == DTE_NOTA_CREDITO:
-                            campo_monto_total = "montoTotalOperacion"
-                        else:
-                            campo_monto_total = "totalPagar"
-
-                        valores.update(calcular_valores_resumen(
-                            resumen,
-                            campo_no_sujeta="totalNoGravado",
-                            campo_monto_total=campo_monto_total,
-                            clave_gravada="sub_total_ventas",
-                        ))
-                        for clave, valor in iterar_tributos_conocidos(resumen):
-                            valores[clave] = valor
-                            var_creciente[f"sum_{clave}"] += valor
-
-                        if tipoDte == DTE_COMPROBANTE_CREDITO_FISCAL:
-                            var_creciente['sum_ccf'] += 1
-                            var_creciente['sum_grav'] += valores['sub_total_ventas']
-                            var_creciente['sum_total'] += valores['monto_total_operacion']
-                        if tipoDte == DTE_NOTA_CREDITO:
-                            var_creciente['sum_ntccredito'] += 1
-                            var_creciente['sum_grav'] -= valores['sub_total_ventas']
-                            var_creciente['sum_total'] -= valores['monto_total_operacion']
-                        if tipoDte == DTE_NOTA_DEBITO:
-                            var_creciente['sum_ntcdebito'] += 1
-                            var_creciente['sum_grav'] += valores['sub_total_ventas']
-                            var_creciente['sum_total'] += valores['monto_total_operacion']
-                        if tipoDte == DTE_FACTURA:
-                            var_creciente['sum_factura'] += 1
-
-                        # Agregar datos al resumen en Excel
-                        fila_resumen = [formatted_date, clase_doc, tipoDte, num_control, sello_recibido, codigoGeneracion,"",
-                                        nrc, nombre_receptor, valores['total_exenta'], valores['total_no_sujeta'],
-                                        valores['sub_total_ventas'], valores['iva'],0,0, valores['monto_total_operacion'],"","","", 1]
-                        ws_resumen.append(fila_resumen)
-                    var_creciente['sum_docjson'] += 1
-                else:
-                    archivos_no_json.append((nombre_archivo, "Error al cargar JSON o campos faltantes"))
-            else:
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-                # Actualizar Treeview
-        doc_types = [
-              ("Facturas", var_creciente['sum_factura']),
-              ("Notas de Crédito", var_creciente['sum_ntccredito']),
-              ("Notas de Débito", var_creciente['sum_ntcdebito']),
-              ("Comprobantes de Crédito Fiscal", var_creciente['sum_ccf']),
-              ("Comprobantes de Retención", var_creciente['sum_comproretencion']),
-              ("Documentos Procesados", var_creciente['sum_docjson']),
-        ]
-
-        # Limpiar Treeview antes de insertar nuevos datos
+        doc_types = generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-
         for item in doc_types:
             tree.insert("", tk.END, values=item)
-
-        # Guardar el archivo Excel
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for archivo in archivos_no_json:
-                ws_errores.append(archivo)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
         messagebox.showinfo("Ventas a Contribuyentes", "Los archivos han sido procesados exitosamente.")
 
     elif tipo_documento == TIPO_DOCUMENTO_CONSUMIDOR_FINAL:
-        # Espacio reservado para implementar lógica de procesamiento para Consumidor Final
-        # Nuevo Libro de Trabajo
-        wb = Workbook()
-        # Creando hojas
-        ws_resumen = wb.active
-        ws_resumen.title = "Consumidor Final"
-        ws_errores = wb.create_sheet(title="Errores")
-        # Títulos de las hojas
-
-        encabezados_resumen = ["Fecha", "Clase de Doc", "Tipo de DTE", "Num_Resolución", "Num_Serie", "Num_ControlInterno(DEL)","Num_ControlInterno(AL)",
-                               "Num_Doc(Del)", "Num_Doc(Al)", "N_Maquina","V_Exenta","V_InternaNS", "V_NoSuj", "Ventas Gravadas","Export Dentro C.A.","Export Fuera C.A.",
-                               "Export Serv ", "Ventas a zonas francas", "Venta_Terceros", "Total Ventas", "Tipo_OP","Tipo_I", "Num_Anexo"]
-        encabezados_errores = ["Nombre del Archivo", "Error"]
-
-        ws_resumen.append(encabezados_resumen)
-        ws_errores.append(encabezados_errores)
-
-        for cell in ws_resumen[1]:
-            cell.font = Font(bold=True)
-
-        for cell in ws_errores[1]:
-            cell.font = Font(bold=True)
-
-        agrupados = defaultdict(list)
-        for nombre_archivo in os.listdir(carpeta):
-            ruta_archivo = os.path.join(carpeta, nombre_archivo)
-            if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
-                datos = cargar_datos_archivo(ruta_archivo)
-                contenido = obtener_contenido_dte(datos, "receptor") if datos else None
-                if contenido:
-                    identificacion = contenido['identificacion']
-                    resumen = contenido['resumen']
-                    tipoDte = identificacion.get('tipoDte')
-                    fecEmi = identificacion.get('fecEmi')
-                    horEmi= identificacion.get('horEmi')
-                    codigoGeneracion = identificacion.get('codigoGeneracion')
-
-                    if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
-                        _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
-                        clave = (formatted_date, tipoDte)
-                        valores_consumidor = calcular_valores_consumidor_final(
-                            resumen,
-                            campo_iva="ivaRetenido",
-                            clave_iva="iva",
-                        )
-                        agrupados[clave].append({
-                            "codigo": codigoGeneracion,
-                            "horEmi": horEmi,
-                            **valores_consumidor,
-                        })
-                        var_creciente['sum_docjson'] += 1
-                else:
-                    archivos_no_json.append((nombre_archivo, "Error al cargar JSON o campos faltantes"))
-            else:
-                archivos_no_json.append((nombre_archivo, "No es un archivo JSON"))
-                # Actualizar Treeview
-        for (fecha, tipoDte), documentos in agrupados.items():
-            documentos_ordenados = sorted(documentos, key=lambda x: x.get("horEmi", "00:00:00"))
-
-            cod_inicio = documentos_ordenados[0]["codigo"]
-            cod_fin = documentos_ordenados[-1]["codigo"]
-
-            total_exenta = sum(d["total_exenta"] for d in documentos)
-            total_no_sujeta = sum(d["total_no_sujeta"] for d in documentos)
-            total_no_gravado = sum(d["total_no_gravado"] for d in documentos)
-            total_gravada = sum(d["total_gravada"] for d in documentos)
-            monto_total_operacion = sum(d["monto_total_operacion"] for d in documentos)
-            iva_total = sum(d["iva"] for d in documentos)
-
-            fila_resumen = [
-                fecha, "4", tipoDte, "N/A", "N/A", "N/A", "N/A",
-                cod_inicio, cod_fin, ""
-            ]
-
-            if tipoDte == DTE_FACTURA:
-                var_creciente['sum_factura'] += len(documentos)
-                fila_resumen += [
-                    total_exenta, 0, total_no_sujeta,
-                    total_gravada, 0, 0, 0, 0, 0,
-                    monto_total_operacion, "", "", 2
-                ]
-            elif tipoDte == DTE_FACTURA_EXPORTACION:
-                var_creciente['sum_export'] += len(documentos)
-                fila_resumen += [
-                    total_exenta, 0, total_no_sujeta,0,
-                    total_gravada, 0,
-                    0, 0,0,
-                    monto_total_operacion,"","", 2
-                ]
-
-            ws_resumen.append(fila_resumen)
-
-        doc_types = [
-              ("Facturas", var_creciente['sum_factura']),
-              ("Facturas de exportacion", var_creciente['sum_export']),
-              ("Notas de Crédito", var_creciente['sum_ntccredito']),
-              ("Notas de Débito", var_creciente['sum_ntcdebito']),
-              ("Comprobantes de Crédito Fiscal", var_creciente['sum_ccf']),
-              ("Comprobantes de Retención", var_creciente['sum_comproretencion']),
-              ("Documentos Procesados", var_creciente['sum_docjson']),
-        ]
-
-        # Limpiar Treeview antes de insertar nuevos datos
+        doc_types = generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida)
         tree.delete(*tree.get_children())
-
         for item in doc_types:
             tree.insert("", tk.END, values=item)
-
-        # Guardar el archivo Excel
-        wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
-        if archivos_no_json:
-            for archivo in archivos_no_json:
-                ws_errores.append(archivo)
-            wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
-
         messagebox.showinfo("Ventas a Consumidor Final", "Los archivos han sido procesados exitosamente.")
 
     elif tipo_documento == TIPO_DOCUMENTO_SUJETO_EXCLUIDO:
@@ -617,6 +398,38 @@ def iniciar_procesamiento(
                 generar_anexo_retencion,
                 "Retención",
                 "Comprobantes de retención procesados correctamente.",
+            )
+            return
+
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_CONTRIBUYENTES:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_contribuyentes,
+                "Ventas a Contribuyentes",
+                "Los archivos han sido procesados exitosamente.",
+            )
+            return
+
+        if tipo_documento_seleccionado == TIPO_DOCUMENTO_CONSUMIDOR_FINAL:
+            procesar_reporte_en_segundo_plano(
+                root,
+                carpeta,
+                salida,
+                nombre_archivo_salida,
+                tree,
+                progreso_var,
+                estado_var,
+                boton_iniciar,
+                generar_anexo_consumidor_final,
+                "Ventas a Consumidor Final",
+                "Los archivos han sido procesados exitosamente.",
             )
             return
 
