@@ -192,7 +192,7 @@ def primary_window():
     style.theme_use('clam') 
     # Intentar usar .ico (Windows)
     try:
-        root.iconbitmap(resource_path("iconos/icono_v3.ico"))
+        root.iconbitmap(resource_path("iconos/iconofldte.ico"))
     except Exception:
         pass  # No romper la app
 

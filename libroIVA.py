@@ -952,7 +952,7 @@ def create_secondary_window(ventanaprincipal):
     secondary_root.grab_set()  
     # Intentar usar .ico (Windows)
     try:
-        secondary_root.iconbitmap(resource_path("iconos/icono_v3.ico"))
+        secondary_root.iconbitmap(resource_path("iconos/iconofldte.ico"))
     except Exception:
         pass  # No romper la app
 
