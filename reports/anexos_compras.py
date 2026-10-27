@@ -18,7 +18,9 @@ from dte.types import (
     DTE_NOTA_DEBITO,
 )
 from services.hacienda import (
+    ConsultorHaciendaPorLotes,
     ConsultaHaciendaError,
+    LimiteConsultasHaciendaError,
     consultar_estado_dte,
     dte_esta_transmitido_satisfactoriamente,
 )
@@ -59,11 +61,40 @@ def generar_anexo_compras(
     nombre_archivo_salida,
     consultar_estado=consultar_estado_dte,
     progreso=None,
+    estado=None,
 ):
     contadores = _crear_contadores()
     archivos_no_json = []
     dtes_invalidos = []
     consultas_hacienda = {}
+    def avisar_espera(segundos, motivo):
+        if estado:
+            estado(
+                f"{motivo} Pausa automática de {segundos} segundos para "
+                "respetar el límite de Hacienda."
+            )
+
+    def avisar_reanudacion():
+        if estado:
+            estado("Reanudando las consultas con Hacienda...")
+
+    def consultar_con_estado(codigo_generacion, fecha_emi):
+        if consultar_estado is consultar_estado_dte:
+            return consultar_estado(
+                codigo_generacion,
+                fecha_emi,
+                al_esperar=avisar_espera,
+                al_reanudar=avisar_reanudacion,
+            )
+        return consultar_estado(codigo_generacion, fecha_emi)
+
+    consultor_hacienda = ConsultorHaciendaPorLotes(
+        consultar_con_estado,
+        al_esperar=avisar_espera,
+        al_reanudar=avisar_reanudacion,
+    )
+    consultar_hacienda = True
+    motivo_sin_verificacion = None
     wb = Workbook()
     ws_resumen = wb.active
     ws_resumen.title = "Resumen de DTEs"
@@ -80,7 +111,7 @@ def generar_anexo_compras(
         "NIT", "Fecha", "Tipo DTE", "Sello Recepcion", "CodGeneracion", "Monto Sujeto",
         "Monto de Percepción", "DUI", "Num_Anexo",
     ])
-    ws_errores.append(["Nombre del Archivo", "Error"])
+    ws_errores.append(["Nombre del Archivo", "Error o aviso"])
 
     for hoja in (ws_resumen, ws_percepcion, ws_errores):
         for cell in hoja[1]:
@@ -119,19 +150,31 @@ def generar_anexo_compras(
         if tipo_dte in DTE_COMPRA_CON_FACTURA:
             codigo_generacion = identificacion.get("codigoGeneracion")
             clave_consulta = (codigo_generacion, fecha_emi)
-            try:
-                respuesta_hacienda = consultas_hacienda.get(clave_consulta)
-                if respuesta_hacienda is None:
-                    respuesta_hacienda = consultar_estado(codigo_generacion, fecha_emi)
+            respuesta_hacienda = consultas_hacienda.get(clave_consulta)
+            if respuesta_hacienda is None and consultar_hacienda:
+                try:
+                    respuesta_hacienda = consultor_hacienda.consultar(
+                        codigo_generacion,
+                        fecha_emi,
+                    )
                     consultas_hacienda[clave_consulta] = respuesta_hacienda
-            except ConsultaHaciendaError as error:
+                except LimiteConsultasHaciendaError as error:
+                    consultar_hacienda = False
+                    motivo_sin_verificacion = str(error)
+                except ConsultaHaciendaError as error:
+                    archivos_no_json.append((
+                        nombre_archivo,
+                        f"No se pudo consultar Hacienda: {error}",
+                    ))
+                    continue
+
+            if respuesta_hacienda is None:
                 archivos_no_json.append((
                     nombre_archivo,
-                    f"No se pudo consultar Hacienda: {error}",
+                    "Procesado sin verificación en Hacienda: "
+                    f"{motivo_sin_verificacion}",
                 ))
-                continue
-
-            if not dte_esta_transmitido_satisfactoriamente(respuesta_hacienda):
+            elif not dte_esta_transmitido_satisfactoriamente(respuesta_hacienda):
                 estado_documento = respuesta_hacienda.get("estadoDoc", "Sin estado")
                 dtes_invalidos.append([
                     nombre_archivo,

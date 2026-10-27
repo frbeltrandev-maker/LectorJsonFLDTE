@@ -18,3 +18,8 @@ dist/
 # Local runtime data
 clientes.json
 license.key
+
+
+dist W7/
+*.pyc
+*.spec

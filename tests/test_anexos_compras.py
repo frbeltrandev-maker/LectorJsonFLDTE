@@ -6,6 +6,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from reports.anexos_compras import generar_anexo_compras
+from services.hacienda import LimiteConsultasHaciendaError
 
 
 class AnexosComprasTests(unittest.TestCase):
@@ -124,3 +125,44 @@ class AnexosComprasTests(unittest.TestCase):
                     "Documento Invalidado por el Emisor.",
                 ),
             )
+
+    def test_procesa_dte_si_hacienda_alcanza_el_limite_de_consultas(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            carpeta = Path(directorio)
+            dte = {
+                "identificacion": {
+                    "fecEmi": "2026-09-07",
+                    "tipoDte": "03",
+                    "codigoGeneracion": "GEN-SIN-VERIFICAR",
+                },
+                "emisor": {
+                    "nit": "0614-000000-000-0",
+                    "nrc": "12345",
+                    "nombre": "Proveedor de Prueba",
+                },
+                "resumen": {"montoTotalOperacion": 25.00},
+                "selloRecibido": "SELLO-LOCAL",
+            }
+            (carpeta / "sin_verificar.json").write_text(
+                json.dumps(dte),
+                encoding="utf-8",
+            )
+
+            def consulta_limitada(codigo, fecha):
+                raise LimiteConsultasHaciendaError("HTTP 429")
+
+            resumen = generar_anexo_compras(
+                carpeta,
+                carpeta,
+                "compras",
+                consultar_estado=consulta_limitada,
+            )
+
+            self.assertEqual(resumen[-1], ("Documentos Procesados", 1))
+            libro = load_workbook(carpeta / "compras.xlsx")
+            self.assertEqual(libro["Resumen de DTEs"].max_row, 2)
+
+            libro_errores = load_workbook(carpeta / "compras_errores.xlsx")
+            aviso = list(libro_errores["Errores"].values)[1]
+            self.assertEqual(aviso[0], "sin_verificar.json")
+            self.assertIn("Procesado sin verificación", aviso[1])

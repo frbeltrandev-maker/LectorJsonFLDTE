@@ -6,6 +6,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from reports.anexos_retencion import generar_anexo_retencion
+from services.hacienda import LimiteConsultasHaciendaError
 
 
 class AnexosRetencionTests(unittest.TestCase):
@@ -96,3 +97,47 @@ class AnexosRetencionTests(unittest.TestCase):
                     "Documento Invalidado por el Emisor.",
                 ),
             )
+
+    def test_procesa_retencion_con_sello_local_si_hacienda_limita_consultas(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            carpeta = Path(directorio)
+            dte = {
+                "identificacion": {
+                    "fecEmi": "2026-09-07",
+                    "tipoDte": "07",
+                    "codigoGeneracion": "RET-SIN-VERIFICAR",
+                },
+                "emisor": {"nit": "0614-000000-000-0"},
+                "resumen": {
+                    "totalSujetoRetencion": 100.00,
+                    "totalIVAretenido": 13.00,
+                },
+                "responseMH": {"selloRecibido": "SELLO-LOCAL"},
+            }
+            (carpeta / "retencion_sin_verificar.json").write_text(
+                json.dumps(dte),
+                encoding="utf-8",
+            )
+
+            def consulta_limitada(codigo, fecha):
+                raise LimiteConsultasHaciendaError("HTTP 429")
+
+            resumen = generar_anexo_retencion(
+                carpeta,
+                carpeta,
+                "retenciones",
+                consultar_estado=consulta_limitada,
+            )
+
+            self.assertEqual(
+                resumen,
+                [("Comprobantes de Retención", 1), ("Documentos Procesados", 1)],
+            )
+            libro = load_workbook(carpeta / "retenciones.xlsx")
+            fila = list(libro["Comprobantes de Retención"].values)[1]
+            self.assertEqual(fila[3], "SELLO-LOCAL")
+
+            libro_errores = load_workbook(carpeta / "retenciones_errores.xlsx")
+            aviso = list(libro_errores["Errores"].values)[1]
+            self.assertEqual(aviso[0], "retencion_sin_verificar.json")
+            self.assertIn("Procesado sin verificación", aviso[1])

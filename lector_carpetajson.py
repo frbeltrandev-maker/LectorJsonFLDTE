@@ -1,4 +1,5 @@
 import os
+import inspect
 import queue
 import threading
 import tkinter as tk
@@ -77,13 +78,19 @@ def procesar_reporte_en_segundo_plano(
     def reportar_progreso(actual, total, archivo):
         eventos.put(("progreso", actual, total, archivo))
 
+    def reportar_estado(mensaje):
+        eventos.put(("estado", mensaje))
+
     def ejecutar_reporte():
         try:
+            argumentos = {"progreso": reportar_progreso}
+            if "estado" in inspect.signature(generar_reporte).parameters:
+                argumentos["estado"] = reportar_estado
             resumen = generar_reporte(
                 carpeta,
                 salida,
                 nombre_archivo_salida,
-                progreso=reportar_progreso,
+                **argumentos,
             )
         except Exception as error:
             eventos.put(("error", str(error)))
@@ -103,6 +110,9 @@ def procesar_reporte_en_segundo_plano(
                 _, actual, total, archivo = evento
                 progreso_var.set((actual / total) * 100 if total else 0)
                 estado_var.set(f"Procesando {actual} de {total}: {archivo}")
+            elif tipo_evento == "estado":
+                _, mensaje = evento
+                estado_var.set(mensaje)
             elif tipo_evento == "completado":
                 _, resumen = evento
                 tree.delete(*tree.get_children())
