@@ -7,11 +7,13 @@ from openpyxl.styles import Font
 from dte.calculations import calcular_valores_consumidor_final
 from dte.extractor import obtener_contenido_dte, obtener_fecha_formateada_dte
 from dte.reader import cargar_datos_archivo
+from dte.duplicates import ControlDuplicadosDTE
 from dte.types import DTE_CONSUMIDOR_FINAL, DTE_FACTURA, DTE_FACTURA_EXPORTACION
 
 
 def generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida, progreso=None):
     total_facturas = 0
+    duplicados = ControlDuplicadosDTE()
     total_exportaciones = 0
     total_documentos = 0
     archivos_no_json = []
@@ -35,7 +37,7 @@ def generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida, progr
         for cell in hoja[1]:
             cell.font = Font(bold=True)
 
-    nombres_archivos = os.listdir(carpeta)
+    nombres_archivos = sorted(os.listdir(carpeta), key=str.casefold)
     total_archivos = len(nombres_archivos)
     for indice, nombre_archivo in enumerate(nombres_archivos, start=1):
         if progreso:
@@ -57,6 +59,9 @@ def generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida, progr
         tipo_dte = identificacion.get("tipoDte")
         fecha_emi = identificacion.get("fecEmi")
         if not fecha_emi or tipo_dte not in DTE_CONSUMIDOR_FINAL:
+            continue
+
+        if duplicados.es_duplicado(identificacion, nombre_archivo):
             continue
 
         _, fecha_formateada = obtener_fecha_formateada_dte(fecha_emi)
@@ -100,10 +105,11 @@ def generar_anexo_consumidor_final(carpeta, salida, nombre_archivo_salida, progr
 
         ws_resumen.append(fila_resumen)
 
+    archivos_no_json.extend(duplicados.avisos)
+    for archivo in archivos_no_json:
+        ws_errores.append(archivo)
     wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
     if archivos_no_json:
-        for archivo in archivos_no_json:
-            ws_errores.append(archivo)
         wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
     return [

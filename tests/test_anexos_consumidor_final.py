@@ -6,9 +6,41 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from reports.anexos_consumidor_final import generar_anexo_consumidor_final
+from tests.dte_fixtures import crear_dte
 
 
 class AnexosConsumidorFinalTests(unittest.TestCase):
+    def test_receptor_null_conserva_importes_directos_anidados_y_agrupados(self):
+        for anidado in (False, True):
+            with self.subTest(anidado=anidado), tempfile.TemporaryDirectory() as directorio:
+                raiz = Path(directorio)
+                entrada = raiz / "entrada"
+                entrada.mkdir()
+                for indice, tipo in enumerate(("01", "01", "11"), start=1):
+                    dte = crear_dte(tipo, f"GEN-{indice}")
+                    dte["receptor"] = None
+                    dte["identificacion"]["horEmi"] = f"0{indice}:00:00"
+                    datos = {"dte": dte} if anidado else dte
+                    (entrada / f"{indice}.json").write_text(json.dumps(datos), encoding="utf-8")
+
+                resumen = dict(generar_anexo_consumidor_final(entrada, raiz, "consumidor"))
+                self.assertEqual(resumen["Documentos Procesados"], 3)
+                self.assertEqual(resumen["Facturas"], 2)
+                self.assertEqual(resumen["Facturas de exportacion"], 1)
+                libro = load_workbook(raiz / "consumidor.xlsx")
+                try:
+                    filas = list(libro["Consumidor Final"].values)
+                    self.assertEqual(len(filas), 3)
+                    factura, exportacion = filas[1:]
+                    self.assertEqual(factura[7:9], ("GEN-1", "GEN-2"))
+                    self.assertEqual((factura[10], factura[12], factura[13]), (4, 4, 6))
+                    self.assertAlmostEqual(factura[19], 14.78)
+                    self.assertEqual((exportacion[10], exportacion[12], exportacion[14]), (2, 2, 3))
+                    self.assertAlmostEqual(exportacion[19], 7.39)
+                    self.assertEqual(libro["Errores"].max_row, 1)
+                finally:
+                    libro.close()
+
     def test_agrupa_facturas_por_fecha_y_tipo(self):
         with tempfile.TemporaryDirectory() as directorio:
             carpeta = Path(directorio)

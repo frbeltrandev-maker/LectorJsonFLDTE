@@ -5,6 +5,7 @@ from openpyxl.styles import Font
 
 from dte.extractor import obtener_contenido_dte, obtener_sello_recibido
 from dte.reader import cargar_datos_archivo
+from dte.duplicates import ControlDuplicadosDTE
 from dte.types import (
     DTE_ANULABLES,
     DTE_COMPROBANTE_CREDITO_FISCAL,
@@ -16,6 +17,7 @@ from dte.types import (
 
 
 def generar_anexo_anulados(carpeta, salida, nombre_archivo_salida, progreso=None):
+    duplicados = ControlDuplicadosDTE()
     contadores = {
         "facturas": 0,
         "credito_fiscal": 0,
@@ -40,7 +42,7 @@ def generar_anexo_anulados(carpeta, salida, nombre_archivo_salida, progreso=None
         for cell in hoja[1]:
             cell.font = Font(bold=True)
 
-    nombres_archivos = os.listdir(carpeta)
+    nombres_archivos = sorted(os.listdir(carpeta), key=str.casefold)
     total_archivos = len(nombres_archivos)
     for indice, nombre_archivo in enumerate(nombres_archivos, start=1):
         if progreso:
@@ -65,6 +67,9 @@ def generar_anexo_anulados(carpeta, salida, nombre_archivo_salida, progreso=None
         tipo_dte = identificacion.get("tipoDte")
         if tipo_dte not in DTE_ANULABLES:
             archivos_no_json.append((nombre_archivo, "Error al cargar JSON o campos faltantes"))
+            continue
+
+        if duplicados.es_duplicado(identificacion, nombre_archivo):
             continue
 
         if tipo_dte == DTE_FACTURA:
@@ -92,10 +97,11 @@ def generar_anexo_anulados(carpeta, salida, nombre_archivo_salida, progreso=None
         ])
         contadores["documentos"] += 1
 
+    archivos_no_json.extend(duplicados.avisos)
+    for archivo in archivos_no_json:
+        ws_errores.append(archivo)
     wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
     if archivos_no_json:
-        for archivo in archivos_no_json:
-            ws_errores.append(archivo)
         wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
     return [

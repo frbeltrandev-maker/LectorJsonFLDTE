@@ -10,6 +10,7 @@ from dte.extractor import (
     obtener_sello_recibido,
 )
 from dte.reader import cargar_datos_archivo
+from dte.duplicates import ControlDuplicadosDTE
 from dte.types import (
     DTE_COMPRA_CON_FACTURA,
     DTE_COMPROBANTE_CREDITO_FISCAL,
@@ -64,6 +65,7 @@ def generar_anexo_compras(
     estado=None,
 ):
     contadores = _crear_contadores()
+    duplicados = ControlDuplicadosDTE()
     archivos_no_json = []
     dtes_invalidos = []
     consultas_hacienda = {}
@@ -117,7 +119,7 @@ def generar_anexo_compras(
         for cell in hoja[1]:
             cell.font = Font(bold=True)
 
-    nombres_archivos = os.listdir(carpeta)
+    nombres_archivos = sorted(os.listdir(carpeta), key=str.casefold)
     total_archivos = len(nombres_archivos)
 
     for indice, nombre_archivo in enumerate(nombres_archivos, start=1):
@@ -148,6 +150,8 @@ def generar_anexo_compras(
         _, fecha_formateada = obtener_fecha_formateada_dte(fecha_emi)
 
         if tipo_dte in DTE_COMPRA_CON_FACTURA:
+            if duplicados.es_duplicado(identificacion, nombre_archivo):
+                continue
             codigo_generacion = identificacion.get("codigoGeneracion")
             clave_consulta = (codigo_generacion, fecha_emi)
             respuesta_hacienda = consultas_hacienda.get(clave_consulta)
@@ -238,7 +242,7 @@ def generar_anexo_compras(
                 emisor.get("nit"),
                 fecha_formateada,
                 tipo_dte,
-                obtener_sello_recibido(contenido),
+                (respuesta_hacienda or {}).get("selloVal") or obtener_sello_recibido(contenido),
                 codigo_generacion,
                 valores["total_gravada"],
                 valores["iva_perci1"],
@@ -246,11 +250,11 @@ def generar_anexo_compras(
                 8,
             ])
 
+    archivos_no_json.extend(duplicados.avisos)
+    for archivo in archivos_no_json:
+        ws_errores.append(archivo)
     wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
     if archivos_no_json:
-        for archivo in archivos_no_json:
-            ws_errores.append(archivo)
         wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
     guardar_dtes_invalidos(salida, dtes_invalidos)

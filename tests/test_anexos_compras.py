@@ -7,9 +7,60 @@ from openpyxl import load_workbook
 
 from reports.anexos_compras import generar_anexo_compras
 from services.hacienda import LimiteConsultasHaciendaError
+from tests.dte_fixtures import crear_dte
+from unittest.mock import Mock
 
 
 class AnexosComprasTests(unittest.TestCase):
+    def test_percepcion_prioriza_sello_hacienda_y_recurre_al_local(self):
+        for sello_mh in ("SELLO-HACIENDA", None, ""):
+            for anidado in (False, True):
+                with self.subTest(sello=sello_mh, anidado=anidado), tempfile.TemporaryDirectory() as directorio:
+                    carpeta = Path(directorio)
+                    dte = crear_dte()
+                    dte["resumen"]["ivaPerci1"] = 0.03
+                    datos = {"dte": dte} if anidado else dte
+                    (carpeta / "dte.json").write_text(json.dumps(datos), encoding="utf-8")
+                    consulta = Mock(return_value={
+                        "estadoDoc": "Transmitido Satisfactoriamente",
+                        "selloVal": sello_mh,
+                    })
+                    generar_anexo_compras(carpeta, carpeta, "compras", consultar_estado=consulta)
+                    consulta.assert_called_once_with("GEN-001", "2026-10-01")
+                    libro = load_workbook(carpeta / "compras.xlsx")
+                    try:
+                        fila = list(libro["Percepción"].values)[1]
+                        self.assertEqual(fila[3], sello_mh or "SELLO-PRUEBA")
+                        self.assertEqual(fila[4], "GEN-001")
+                        self.assertEqual(fila[5], 3)
+                        self.assertAlmostEqual(fila[6], 0.03)
+                    finally:
+                        libro.close()
+
+    def test_percepcion_usa_sello_local_tras_limite_sin_reutilizar_sello_anterior(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            carpeta = Path(directorio)
+            for indice in range(1, 4):
+                dte = crear_dte(codigo=f"GEN-{indice}")
+                dte["resumen"]["ivaPerci1"] = 0.03
+                dte["selloRecibido"] = f"SELLO-LOCAL-{indice}"
+                (carpeta / f"{indice}.json").write_text(json.dumps(dte), encoding="utf-8")
+            consulta = Mock(side_effect=[
+                {"estadoDoc": "Transmitido Satisfactoriamente", "selloVal": "SELLO-MH-1"},
+                LimiteConsultasHaciendaError("HTTP 429"),
+            ])
+            resumen = dict(generar_anexo_compras(carpeta, carpeta, "compras", consultar_estado=consulta))
+            self.assertEqual(consulta.call_count, 2)
+            self.assertEqual(resumen["Documentos Procesados"], 3)
+            libro = load_workbook(carpeta / "compras.xlsx")
+            try:
+                filas = list(libro["Percepción"].values)[1:]
+                self.assertEqual([fila[3] for fila in filas], ["SELLO-MH-1", "SELLO-LOCAL-2", "SELLO-LOCAL-3"])
+                self.assertAlmostEqual(sum(fila[6] for fila in filas), 0.09)
+                self.assertEqual(libro["Errores"].max_row, 3)
+            finally:
+                libro.close()
+
     def test_genera_anexo_y_resumen_de_compras(self):
         with tempfile.TemporaryDirectory() as directorio:
             carpeta = Path(directorio)

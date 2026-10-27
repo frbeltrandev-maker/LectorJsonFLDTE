@@ -9,6 +9,7 @@ from dte.extractor import (
     obtener_sello_recibido,
 )
 from dte.reader import cargar_datos_archivo
+from dte.duplicates import ControlDuplicadosDTE
 from dte.types import DTE_COMPROBANTE_RETENCION
 from reports.invalidos_dte import guardar_dtes_invalidos
 from services.hacienda import (
@@ -29,6 +30,7 @@ def generar_anexo_retencion(
     estado=None,
 ):
     total_retenciones = 0
+    duplicados = ControlDuplicadosDTE()
     total_documentos = 0
     archivos_no_json = []
     dtes_invalidos = []
@@ -76,7 +78,7 @@ def generar_anexo_retencion(
         for cell in hoja[1]:
             cell.font = Font(bold=True)
 
-    nombres_archivos = os.listdir(carpeta)
+    nombres_archivos = sorted(os.listdir(carpeta), key=str.casefold)
     total_archivos = len(nombres_archivos)
 
     for indice, nombre_archivo in enumerate(nombres_archivos, start=1):
@@ -101,6 +103,9 @@ def generar_anexo_retencion(
 
         identificacion = contenido["identificacion"]
         if identificacion.get("tipoDte") != DTE_COMPROBANTE_RETENCION:
+            continue
+
+        if duplicados.es_duplicado(identificacion, nombre_archivo):
             continue
 
         fecha_emi = identificacion.get("fecEmi")
@@ -157,11 +162,11 @@ def generar_anexo_retencion(
         total_retenciones += 1
         total_documentos += 1
 
+    archivos_no_json.extend(duplicados.avisos)
+    for archivo in archivos_no_json:
+        ws_errores.append(archivo)
     wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
-
     if archivos_no_json:
-        for archivo in archivos_no_json:
-            ws_errores.append(archivo)
         wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
     guardar_dtes_invalidos(salida, dtes_invalidos)

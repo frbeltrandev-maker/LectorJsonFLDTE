@@ -13,6 +13,7 @@ from dte.calculations import (
     iterar_tributos_conocidos,
 )
 from dte.extractor import obtener_contenido_dte, obtener_fecha_formateada_dte
+from dte.duplicates import ControlDuplicadosDTE
 from dte.reader import cargar_datos_archivo
 from dte.types import (
     DTE_COMPRA,
@@ -197,7 +198,15 @@ def ventana_cliente(parent, callback_actualizar, cliente_seleccionado=None):
     tk.Button(win, text="Guardar", command=guardar).grid(row=4, column=0, columnspan=2, pady=15)
 
 
-def crear_libro_excel(encabezado_1, encabezado_2, titulo_libro, nombre_contribuyente, nrc, nit, dui, periodo, anio,filas_datos,totales,nombre_firmador,salida,resumen_operaciones):
+def calcular_totales_libro(filas_datos, cantidad_columnas):
+    """Suma las columnas monetarias tal como se muestran en las filas del libro."""
+    return [
+        sum(float(fila[columna] or 0) for _, fila in filas_datos)
+        for columna in range(5, 5 + cantidad_columnas)
+    ]
+
+
+def crear_libro_excel(encabezado_1, encabezado_2, titulo_libro, nombre_contribuyente, nrc, nit, dui, periodo, anio,filas_datos,totales,nombre_firmador,salida,resumen_operaciones,avisos=None):
     wb = openpyxl.Workbook()
     ws = wb.active
 
@@ -462,12 +471,20 @@ def crear_libro_excel(encabezado_1, encabezado_2, titulo_libro, nombre_contribuy
     ws.print_title_rows = '1:12'
 
     # === GUARDAR ARCHIVO ===
+    if avisos:
+        ws_avisos = wb.create_sheet("Avisos")
+        ws_avisos.append(["Nombre del Archivo", "Aviso"])
+        for aviso in avisos:
+            ws_avisos.append(aviso)
+        for celda in ws_avisos[1]:
+            celda.font = Font(bold=True)
     wb.save(salida)
 
 
 
 def generar_libro_excel(carpeta,salida,tipo_libro):
     var_creciente = variables_crecientes()
+    duplicados = ControlDuplicadosDTE()
     if tipo_libro == TIPO_LIBRO_COMPRAS:
         nombre_contribuyente = nombre_contri_var.get()
         nrce = nrc_entry.get()
@@ -483,29 +500,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
         encabezado_compras_2 = ["", "", "Documento", "", "", "Internas", "Import.", "Internas", "Import.", "Cotrans",
                                 "Fiscal", "Compra", "IVA", "Excluidos"]
 
-        sum_compras_exentas_internas = 0
-        sum_compras_exentas_import=0
-        sum_compras_gravadas_internas = 0
-        sum_compras_gravadas_import=0
-        sum_fovial_cotrans = 0
-        sum_credito_fiscal = 0
-        sum_total_compra = 0
-        sum_percepcion_iva = 0
-        sum_sujetos_excluidos=0
-
-        totales = [
-            sum_compras_exentas_internas,
-            sum_compras_exentas_import,
-            sum_compras_gravadas_internas,
-            sum_compras_gravadas_import,
-            sum_fovial_cotrans,
-            sum_credito_fiscal,
-            sum_total_compra,
-            sum_percepcion_iva,
-            sum_sujetos_excluidos
-        ]
-
-        for nombre_de_archivo in os.listdir(carpeta):
+        for nombre_de_archivo in sorted(os.listdir(carpeta), key=str.casefold):
             ruta_archivo = os.path.join(carpeta, nombre_de_archivo)
             if os.path.isfile(ruta_archivo) and nombre_de_archivo.lower().endswith('.json'):
                 archivo_json = cargar_datos_archivo(ruta_archivo)
@@ -532,6 +527,8 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 date_obj, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                 if tipoDte in DTE_COMPRA:
+                    if duplicados.es_duplicado(identificacion, nombre_de_archivo):
+                        continue
                     valores.update(calcular_valores_resumen(
                         resumen,
                         campo_no_sujeta="totalNoSuj",
@@ -572,17 +569,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                     filas_datos.append((date_obj, fila))
 
                     var_creciente['sum_docjson'] += 1
-                    # Totales
-                    totales[0] += valores.get('total_exenta', 0)
-                    totales[1] += valores.get('total_exenta_import', 0)
-                    totales[2] += valores.get('total_gravada', 0)
-                    totales[3] += valores.get('sub_total_ventas_import', 0)
-                    totales[4] += valores.get('fovial', 0) + valores.get('cotrans', 0)
-                    totales[5] += valores.get('iva', 0)
-                    totales[6] += valores.get('monto_total_operacion', 0) + valores.get('iva_perci1', 0)
-                    totales[7] += valores.get('iva_perci1', 0)
-                    totales[8] += valores.get('sujeto_excluido', 0)
-           
+        totales = calcular_totales_libro(filas_datos, 9)
         crear_libro_excel(
             encabezado_compras_1,
             encabezado_compras_2,
@@ -597,7 +584,8 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             totales,
             nombre_firmador,
             salida,
-            resumen_operaciones=None
+            resumen_operaciones=None,
+            avisos=duplicados.avisos,
         )
         messagebox.showinfo("Éxito", "El libro de Compras se ha generado exitosamente.")
     elif tipo_libro == TIPO_LIBRO_VENTAS_CONTRIBUYENTES:
@@ -616,28 +604,6 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
         encabezado_registro1 = ["", "", "Documento", "", "", "Exentas", "Gravadas", "Debito", "Exentas","Gravadas","Debito","Venta",
                                 "IVA", "IVA"]
 
-        sum_compras_exentas_internas = 0.0
-        sum_compras_gravadas_internas = 0.0
-        sum_credito_fiscal = 0.0
-        sum_ventas_exentas_ter=0.0
-        sum_ventas_gravadas_ter = 0.0
-        sum_ventas_debito_ter = 0.0
-        sum_total_compra = 0.0
-        sum_percepcion_iva = 0.0
-        sum_retencion_iva = 0.0
-
-        totales = [
-            sum_compras_exentas_internas,
-            sum_compras_gravadas_internas,
-            sum_credito_fiscal,
-            sum_ventas_exentas_ter ,
-            sum_ventas_gravadas_ter,
-            sum_ventas_debito_ter,
-            sum_total_compra,
-            sum_percepcion_iva,
-            sum_retencion_iva,
-        ]
-
         resumen_operaciones = {
             "contribuyentes": {
                 "exentas": None,
@@ -655,7 +621,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             }
         }
 
-        for nombre_de_archivo in os.listdir(carpeta):
+        for nombre_de_archivo in sorted(os.listdir(carpeta), key=str.casefold):
             ruta_archivo = os.path.join(carpeta, nombre_de_archivo)
             if os.path.isfile(ruta_archivo) and nombre_de_archivo.lower().endswith('.json'):
                 archivo_json = cargar_datos_archivo(ruta_archivo)
@@ -682,6 +648,8 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                 date_obj, formatted_date = obtener_fecha_formateada_dte(fecEmi)
 
                 if tipoDte in DTE_COMPRA:
+                    if duplicados.es_duplicado(identificacion, nombre_de_archivo):
+                        continue
                     if tipoDte == DTE_NOTA_CREDITO:
                         campo_monto_total = "montoTotalOperacion"
                     else:
@@ -727,16 +695,7 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                     filas_datos.append((date_obj, fila_datos))
 
                     var_creciente['sum_docjson'] += 1
-                    totales[0] += valores['total_exenta']
-                    totales[1] += valores['sub_total_ventas']
-                    totales[2] += valores['iva']
-                    totales[3] = 0
-                    totales[4] = 0
-                    totales[5] = 0
-                    totales[6] += valores['monto_total_operacion']
-                    totales[7] += valores['iva_perci1']
-                    totales[8] += valores['iva_ret1']
-
+        totales = calcular_totales_libro(filas_datos, 9)
         resumen_operaciones["contribuyentes"] = {
             "exentas": totales[0],
             "gravadas": totales[1],
@@ -759,7 +718,8 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             totales,
             nombre_firmador,
             salida,
-            resumen_operaciones
+            resumen_operaciones,
+            avisos=duplicados.avisos,
         )
         messagebox.showinfo("Éxito", "Libro de Ventas a Contribuyentes se ha generado exitosamente.")
     elif tipo_libro == TIPO_LIBRO_VENTAS_CONSUMIDOR_FINAL:
@@ -776,20 +736,6 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
         encabezado_registro = ["#", "Fecha", "No Del", "No Al", "Nombre", "Ventas Consumidores","","","","Retencion","Total"]
         encabezado_registro1 = ["", "", "Documento", "Documento", "","Exentas","Gravadas","Exportacion","Terceros","IVA","Venta" ]
 
-        sum_ventas_exentas = 0.0
-        sum_ventas_gravadas = 0.0
-        sum_ventas_export =0.0
-        sum_ventas_terceros=0.0
-        sum_retencion_iva=0.0
-        sum_monto_total=0.0
-        totales=[
-            sum_ventas_exentas,
-            sum_ventas_gravadas,
-            sum_ventas_export,
-            sum_ventas_terceros,
-            sum_retencion_iva,
-            sum_monto_total
-        ]
         resumen_operaciones = {
             "contribuyentes": {
                 "exentas": None,
@@ -807,22 +753,24 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             }
         }
         agrupados = defaultdict(list)
-        for nombre_archivo in os.listdir(carpeta):
+        for nombre_archivo in sorted(os.listdir(carpeta), key=str.casefold):
             ruta_archivo = os.path.join(carpeta, nombre_archivo)
             if os.path.isfile(ruta_archivo) and nombre_archivo.lower().endswith('.json'):
                 datos = cargar_datos_archivo(ruta_archivo)
                 contenido = obtener_contenido_dte(datos, "receptor") if datos else None
                 if contenido:
                     identificacion = contenido['identificacion']
-                    receptor = contenido['receptor']
+                    receptor = contenido.get('receptor') or {}
                     resumen = contenido['resumen']
                     tipoDte = identificacion.get('tipoDte')
                     fecEmi = identificacion.get('fecEmi')
                     horEmi = identificacion.get('horEmi')
-                    nombre = receptor.get('nombre')
+                    nombre = receptor.get('nombre', '')
                     codigoGeneracion = identificacion.get('codigoGeneracion')
 
                     if fecEmi and tipoDte in DTE_CONSUMIDOR_FINAL:
+                        if duplicados.es_duplicado(identificacion, nombre_archivo):
+                            continue
                         _, formatted_date = obtener_fecha_formateada_dte(fecEmi)
                         clave = (formatted_date, tipoDte)
                         valores_consumidor = calcular_valores_consumidor_final(
@@ -863,28 +811,17 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
                     total_exenta, total_gravada, 0,0, retencioniva,
                     monto_total_operacion,
                 ]
-                totales[0] += total_exenta
-                totales[1] += total_gravada
-                totales[2] += 0
-                totales[3] += 0
-                totales[4] += retencioniva
-                totales [5] +=monto_total_operacion
 
             elif tipoDte == DTE_FACTURA_EXPORTACION:
                 fila_resumen += [
                     0, 0,total_gravada, 0,retencioniva,
                     monto_total_operacion,
                 ]
-                totales[0] += total_exenta
-                totales[1] += 0
-                totales[2] += total_gravada
-                totales[3] += 0
-                totales[4] += retencioniva
-                totales[5] += monto_total_operacion
             filas_datos.append((fecha_dt, fila_resumen))
 
         filas_datos.sort(key=lambda x: x[0])
 
+        totales = calcular_totales_libro(filas_datos, 6)
         base_gravada = round(totales[1] / 1.13, 2)
         debito_fiscal = round(base_gravada * 0.13, 2)
 
@@ -910,7 +847,8 @@ def generar_libro_excel(carpeta,salida,tipo_libro):
             totales,
             nombre_firmador,
             salida,
-            resumen_operaciones
+            resumen_operaciones,
+            avisos=duplicados.avisos,
         )
         messagebox.showinfo("Éxito", "Libro de Ventas a Consumidor Final se ha generado exitosamente.")
     elif tipo_libro not in TIPOS_LIBRO_IVA:

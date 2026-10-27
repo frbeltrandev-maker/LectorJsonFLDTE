@@ -1,8 +1,11 @@
 from datetime import datetime
 
 
-def obtener_contenido_dte(datos, campo_participante):
-    campos_requeridos = ("identificacion", campo_participante, "resumen")
+def obtener_contenido_dte(datos, campo_participante, campo_resumen="resumen"):
+    campos_requeridos = ("identificacion", campo_participante, campo_resumen)
+
+    if not isinstance(datos, dict):
+        return None
 
     if all(campo in datos for campo in campos_requeridos):
         return datos

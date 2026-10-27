@@ -10,6 +10,7 @@ from dte.extractor import (
     obtener_sello_recibido,
 )
 from dte.reader import cargar_datos_archivo
+from dte.duplicates import ControlDuplicadosDTE
 from dte.types import (
     DTE_COMPRA,
     DTE_COMPROBANTE_CREDITO_FISCAL,
@@ -50,6 +51,7 @@ def _crear_valores():
 
 def generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida, progreso=None):
     contadores = _crear_contadores()
+    duplicados = ControlDuplicadosDTE()
     archivos_no_json = []
     wb = Workbook()
     ws_resumen = wb.active
@@ -68,7 +70,7 @@ def generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida, progres
         for cell in hoja[1]:
             cell.font = Font(bold=True)
 
-    nombres_archivos = os.listdir(carpeta)
+    nombres_archivos = sorted(os.listdir(carpeta), key=str.casefold)
     total_archivos = len(nombres_archivos)
     for indice, nombre_archivo in enumerate(nombres_archivos, start=1):
         if progreso:
@@ -93,6 +95,9 @@ def generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida, progres
         tipo_dte = identificacion.get("tipoDte")
         if tipo_dte not in DTE_COMPRA:
             contadores["sum_docjson"] += 1
+            continue
+
+        if duplicados.es_duplicado(identificacion, nombre_archivo):
             continue
 
         if tipo_dte == DTE_NOTA_CREDITO:
@@ -150,10 +155,11 @@ def generar_anexo_contribuyentes(carpeta, salida, nombre_archivo_salida, progres
         ])
         contadores["sum_docjson"] += 1
 
+    archivos_no_json.extend(duplicados.avisos)
+    for archivo in archivos_no_json:
+        ws_errores.append(archivo)
     wb.save(os.path.join(salida, f"{nombre_archivo_salida}.xlsx"))
     if archivos_no_json:
-        for archivo in archivos_no_json:
-            ws_errores.append(archivo)
         wb.save(os.path.join(salida, f"{nombre_archivo_salida}_errores.xlsx"))
 
     return [

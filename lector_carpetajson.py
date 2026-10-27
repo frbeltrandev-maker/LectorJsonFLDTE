@@ -7,6 +7,7 @@ from tkinter import ttk, filedialog, messagebox
 import sys
 from libroIVA import create_secondary_window,centrar_ventana
 from dte.types import (
+    TIPO_DOCUMENTO_ANTICIPO_IVA,
     TIPO_DOCUMENTO_ANULADOS,
     TIPO_DOCUMENTO_COMPRAS,
     TIPO_DOCUMENTO_CONSUMIDOR_FINAL,
@@ -17,6 +18,7 @@ from dte.types import (
 )
 from licensing.license_manager import validar_licencia, activar_gui
 from reports.anexos_compras import generar_anexo_compras
+from reports.anexos_anticipo_iva import generar_anexo_anticipo_iva
 from reports.anexos_anulados import generar_anexo_anulados
 from reports.anexos_contribuyentes import generar_anexo_contribuyentes
 from reports.anexos_consumidor_final import generar_anexo_consumidor_final
@@ -25,6 +27,11 @@ from reports.anexos_sujeto_excluido import generar_anexo_sujeto_excluido
 
 
 REPORTES = {
+    TIPO_DOCUMENTO_ANTICIPO_IVA: (
+        generar_anexo_anticipo_iva,
+        "Anticipo a cuenta IVA 2%",
+        "Anexo 6 generado. Revise el archivo de errores si fue creado.",
+    ),
     TIPO_DOCUMENTO_COMPRAS: (
         generar_anexo_compras,
         "Compras",
